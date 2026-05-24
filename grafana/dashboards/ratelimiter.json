@@ -1,0 +1,72 @@
+{
+  "title": "Rate Limiter Dashboard",
+  "uid": "ratelimiter-main",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests allowed / sec",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "rate(ratelimiter_requests_allowed_total[30s])",
+        "legendFormat": "{{algorithm}} / {{key_type}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Requests denied / sec",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "rate(ratelimiter_requests_denied_total[30s])",
+        "legendFormat": "{{algorithm}} / {{key_type}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"fixedColor": "red", "mode": "fixed"}}}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Redis latency p50 / p99",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(ratelimiter_redis_latency_seconds_bucket[30s]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(ratelimiter_redis_latency_seconds_bucket[30s]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 4,
+      "type": "gauge",
+      "title": "Cache hit ratio",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "ratelimiter_cache_hit_ratio * 100",
+        "legendFormat": "{{algorithm}}"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 60},
+              {"color": "green", "value": 85}
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

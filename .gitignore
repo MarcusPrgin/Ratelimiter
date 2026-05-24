@@ -1,0 +1,8 @@
+bin/
+*.exe
+*.test
+*.out
+docs/benchmarks.txt
+docs/k6-*.json
+.env
+vendor/

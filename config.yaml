@@ -1,0 +1,54 @@
+server:
+  port: 8080
+  read_timeout: 5s
+  write_timeout: 10s
+
+redis:
+  addr: "localhost:6379"    # override with RATELIMITER_REDIS_ADDR
+  password: ""
+  db: 0
+  pool_size: 20             # tune based on your node count × expected concurrency
+  dial_timeout: 2s
+  read_timeout: 1s
+  write_timeout: 1s
+
+limiter:
+  # Options: sliding_window_counter | token_bucket | fixed_window | sliding_window_log
+  algorithm: sliding_window_counter
+
+  limit: 100          # requests per window
+  window: 1s          # window size
+
+  # token bucket only: max tokens above limit (allows controlled bursting)
+  burst_max: 150
+
+  # local cache TTL — set to 0 to disable (always hit Redis)
+  # Tradeoff: higher TTL = faster decisions, less accurate counts
+  # With 3 nodes and 5ms TTL, worst-case over-admission is tiny.
+  # With 10 nodes and 50ms TTL, it can be significant — see README.
+  cache_ttl: 5ms
+
+  # What to do when Redis is unreachable:
+  #   fail_open      — allow everything (good for non-critical APIs)
+  #   fail_closed    — deny everything (good for payment/auth)
+  #   local_fallback — use in-memory limiter (each node enforces independently)
+  fallback_strategy: fail_open
+
+  # How to identify callers:
+  #   ip     — use client IP (or X-Forwarded-For)
+  #   user   — use X-User-ID header
+  #   tenant — use X-Tenant-ID + X-User-ID headers
+  key_type: ip
+
+# Per-route overrides — these take precedence over the global limiter config
+# routes:
+#   - path: /api/checkout
+#     limit: 10
+#     window: 1s
+#   - path: /api/search
+#     limit: 500
+#     window: 1s
+
+metrics:
+  enabled: true
+  path: /metrics
