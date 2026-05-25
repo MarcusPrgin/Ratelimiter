@@ -6,11 +6,9 @@ package limiter
 
 import (
 	"context"
-	"crypto/sha1"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
-	"math"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,7 +18,7 @@ import (
 var slidingWindowScript string
 
 // RedisLimiter implements distributed rate limiting backed by Redis.
-// Uses a Lua script for atomic sliding window counter operations.
+// Uses an atomic Lua script so multiple nodes never race on window counters.
 type RedisLimiter struct {
 	client     *redis.Client
 	cfg        Config
@@ -30,13 +28,10 @@ type RedisLimiter struct {
 
 func NewRedisLimiter(client *redis.Client, cfg Config) (*RedisLimiter, error) {
 	ctx := context.Background()
-
-	// pre-load the Lua script — we reference it by SHA for efficiency
 	sha, err := client.ScriptLoad(ctx, slidingWindowScript).Result()
 	if err != nil {
 		return nil, fmt.Errorf("loading lua script: %w", err)
 	}
-
 	return &RedisLimiter{
 		client:     client,
 		cfg:        cfg,
@@ -46,10 +41,13 @@ func NewRedisLimiter(client *redis.Client, cfg Config) (*RedisLimiter, error) {
 }
 
 func (r *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
+	return r.AllowN(ctx, key, 1)
+}
+
+func (r *RedisLimiter) AllowN(ctx context.Context, key string, n int64) (Result, error) {
 	now := time.Now()
 	windowSecs := int64(r.cfg.Window.Seconds())
 
-	// floor to window boundary
 	winStart := (now.Unix() / windowSecs) * windowSecs
 	prevWinStart := winStart - windowSecs
 
@@ -58,34 +56,12 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
 
 	nowF := float64(now.Unix()) + float64(now.Nanosecond())/1e9
 
-	// run the Lua script atomically
-	vals, err := r.client.EvalSha(ctx, r.scriptSHA,
-		[]string{currKey, prevKey},
-		r.cfg.Limit,
-		windowSecs,
-		nowF,
-		winStart,
-	).Int64Slice()
-
-	// if script was flushed from Redis, reload it
-	if err != nil && isNoScriptErr(err) {
-		sha, loadErr := r.client.ScriptLoad(ctx, r.scriptBody).Result()
-		if loadErr != nil {
-			return Result{}, fmt.Errorf("reloading script: %w", loadErr)
-		}
-		r.scriptSHA = sha
-		vals, err = r.client.EvalSha(ctx, r.scriptSHA,
-			[]string{currKey, prevKey},
-			r.cfg.Limit, windowSecs, nowF, winStart,
-		).Int64Slice()
-	}
-
+	vals, err := r.evalScript(ctx, currKey, prevKey, r.cfg.Limit, windowSecs, nowF, winStart, n)
 	if err != nil {
 		return Result{}, fmt.Errorf("redis eval: %w", err)
 	}
 
 	allowed := vals[0] == 1
-	currCount := vals[1]
 	effective := vals[2]
 
 	remaining := r.cfg.Limit - effective
@@ -106,7 +82,6 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
 		}, nil
 	}
 
-	_ = currCount // available for debugging
 	return Result{
 		Allowed:    true,
 		Limit:      r.cfg.Limit,
@@ -117,27 +92,24 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
 
 func (r *RedisLimiter) Name() string { return "redis_sliding_window" }
 
-// scriptSHAFromBody computes the SHA1 of a Lua script body — matches Redis's own calculation.
-func scriptSHAFromBody(script string) string {
-	h := sha1.New()
-	h.Write([]byte(script))
-	return hex.EncodeToString(h.Sum(nil))
+// evalScript runs the Lua script via EVALSHA, reloading it on NOSCRIPT errors.
+func (r *RedisLimiter) evalScript(ctx context.Context, currKey, prevKey string,
+	limit, windowSecs int64, nowF float64, winStart, cost int64) ([]int64, error) {
+	keys := []string{currKey, prevKey}
+	args := []interface{}{limit, windowSecs, nowF, winStart, cost}
+
+	vals, err := r.client.EvalSha(ctx, r.scriptSHA, keys, args...).Int64Slice()
+	if err != nil && isNoScriptErr(err) {
+		sha, loadErr := r.client.ScriptLoad(ctx, r.scriptBody).Result()
+		if loadErr != nil {
+			return nil, fmt.Errorf("reloading script: %w", loadErr)
+		}
+		r.scriptSHA = sha
+		vals, err = r.client.EvalSha(ctx, r.scriptSHA, keys, args...).Int64Slice()
+	}
+	return vals, err
 }
 
 func isNoScriptErr(err error) bool {
-	return err != nil && len(err.Error()) >= 8 && err.Error()[:8] == "NOSCRIPT"
-}
-
-// windowBoundary returns the floor of t to the nearest window boundary.
-func windowBoundary(t time.Time, window time.Duration) time.Time {
-	windowSecs := int64(window.Seconds())
-	floor := (t.Unix() / windowSecs) * windowSecs
-	return time.Unix(floor, 0)
-}
-
-// elapsedFraction returns what fraction of the current window has elapsed (0.0–1.0).
-func elapsedFraction(now time.Time, window time.Duration) float64 {
-	boundary := windowBoundary(now, window)
-	elapsed := now.Sub(boundary).Seconds()
-	return math.Min(elapsed/window.Seconds(), 1.0)
+	return err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT")
 }

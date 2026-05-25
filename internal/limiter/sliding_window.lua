@@ -1,5 +1,5 @@
--- Atomic sliding window counter using Lua.
--- This script runs atomically on Redis — no other command can interleave.
+-- Atomic sliding window counter with cost-weighted quota (ARGV[5]).
+-- Executes atomically on Redis — no other command can interleave.
 --
 -- Why Lua? The naive approach (INCRBY + EXPIRE as two commands) has a race:
 --   1. Client A calls INCRBY key 1  -> key = 1
@@ -14,6 +14,7 @@
 -- ARGV[2]: window size in seconds
 -- ARGV[3]: current time as Unix timestamp (float, seconds)
 -- ARGV[4]: window start timestamp (floor to window boundary)
+-- ARGV[5]: cost (number of quota units this request consumes; default 1)
 --
 -- Returns: {allowed (0|1), current_count, effective_count}
 
@@ -23,32 +24,33 @@ local limit     = tonumber(ARGV[1])
 local window    = tonumber(ARGV[2])
 local now       = tonumber(ARGV[3])
 local win_start = tonumber(ARGV[4])
+local cost      = tonumber(ARGV[5]) or 1
 
--- elapsed time into the current window (0.0 – 1.0)
+-- elapsed fraction of the current window (0.0 – 1.0)
 local elapsed_pct = (now - win_start) / window
 
--- previous window count (may not exist)
-local prev_count = tonumber(redis.call('GET', prev_key)) or 0
-
--- weight of previous window
+-- weighted contribution of the previous window
+local prev_count  = tonumber(redis.call('GET', prev_key)) or 0
 local prev_weight = 1.0 - elapsed_pct
-local effective = math.floor(prev_count * prev_weight)
+local effective   = math.floor(prev_count * prev_weight)
 
 -- current window count
 local curr_count = tonumber(redis.call('GET', curr_key)) or 0
 effective = effective + curr_count
 
-if effective >= limit then
+-- deny if adding cost would exceed the limit
+if effective + cost > limit then
     return {0, curr_count, effective}
 end
 
--- atomically increment current window
-local new_count = redis.call('INCR', curr_key)
+-- atomically increment by cost
+local new_count = redis.call('INCRBY', curr_key, cost)
 
--- set expiry only on first write (avoids reset bug)
-if new_count == 1 then
-    -- expire after 2 windows so previous window data is available
+-- set expiry only on first write:
+-- when the key was absent, INCRBY initialises to 0 then adds cost → new_count == cost.
+-- subsequent writes produce new_count > cost, so EXPIRE is never reset.
+if new_count == cost then
     redis.call('EXPIRE', curr_key, window * 2)
 end
 
-return {1, new_count, effective + 1}
+return {1, new_count, effective + cost}

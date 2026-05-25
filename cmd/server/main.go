@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,7 +19,9 @@ import (
 	"github.com/yourname/ratelimiter/internal/config"
 	"github.com/yourname/ratelimiter/internal/fallback"
 	"github.com/yourname/ratelimiter/internal/limiter"
+	"github.com/yourname/ratelimiter/internal/metrics"
 	"github.com/yourname/ratelimiter/internal/middleware"
+	"github.com/yourname/ratelimiter/internal/penalty"
 )
 
 func main() {
@@ -35,7 +38,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Redis client ────────────────────────────────────────────────────────
+	// application-level context — cancelled on shutdown to stop all background goroutines
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
+	// ── Redis client ─────────────────────────────────────────────────────────
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.Redis.Addr,
 		Password:     cfg.Redis.Password,
@@ -46,22 +53,23 @@ func main() {
 		WriteTimeout: cfg.Redis.WriteTimeout,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(appCtx, 3*time.Second)
+	defer pingCancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
 		slog.Warn("redis unavailable at startup — will use fallback strategy",
 			"addr", cfg.Redis.Addr, "error", err)
 	} else {
 		slog.Info("redis connected", "addr", cfg.Redis.Addr)
 	}
 
-	// ── Primary limiter (Redis) ─────────────────────────────────────────────
+	// ── Base limiter config ──────────────────────────────────────────────────
 	limCfg := limiter.Config{
 		Limit:    cfg.Limiter.Limit,
 		Window:   cfg.Limiter.Window,
 		BurstMax: cfg.Limiter.BurstMax,
 	}
 
+	// ── Primary limiter (Redis or in-memory fallback) ────────────────────────
 	var primary limiter.Limiter
 	redisLimiter, redisErr := limiter.NewRedisLimiter(rdb, limCfg)
 	if redisErr != nil {
@@ -71,48 +79,115 @@ func main() {
 		primary = redisLimiter
 	}
 
-	// ── Local fallback limiter (in-memory) ──────────────────────────────────
-	localLimiter := buildLocalLimiter(cfg.Limiter.Algorithm, limCfg)
+	// ── Chained (hierarchical) limiter ───────────────────────────────────────
+	// Adds a per-tenant tier and a global tier on top of the per-key limit.
+	if cfg.Limiter.Chain.Enabled {
+		tenantCfg := limiter.Config{Limit: cfg.Limiter.Chain.TenantLimit, Window: cfg.Limiter.Window}
+		globalCfg := limiter.Config{Limit: cfg.Limiter.Chain.GlobalLimit, Window: cfg.Limiter.Window}
 
-	// ── Fallback handler ────────────────────────────────────────────────────
+		primary = limiter.NewChainedLimiter(
+			limiter.ChainTier{
+				Name:    "per_key",
+				Limiter: primary,
+			},
+			limiter.ChainTier{
+				Name:    "per_tenant",
+				Limiter: limiter.NewSlidingWindowCounter(tenantCfg),
+				KeyFunc: func(key string) string {
+					// extract tenant prefix from "tenant:<id>:user:<uid>" or fall back to "global"
+					if i := strings.Index(key, ":"); i >= 0 {
+						return "tenant:" + key[:i]
+					}
+					return "tenant:global"
+				},
+			},
+			limiter.ChainTier{
+				Name:    "global",
+				Limiter: limiter.NewSlidingWindowCounter(globalCfg),
+				KeyFunc: func(_ string) string { return "global" },
+			},
+		)
+		slog.Info("chain limiter enabled",
+			"tenant_limit", cfg.Limiter.Chain.TenantLimit,
+			"global_limit", cfg.Limiter.Chain.GlobalLimit)
+	}
+
+	// ── Adaptive limiter ─────────────────────────────────────────────────────
+	// Wraps the primary (or chained) limiter and sheds load when latency rises.
+	var adaptiveLimiter *limiter.AdaptiveLimiter
+	if cfg.Limiter.Adaptive.Enabled {
+		adaptiveCfg := limiter.AdaptiveConfig{
+			LowWatermarkMs:  cfg.Limiter.Adaptive.LowWatermarkMs,
+			HighWatermarkMs: cfg.Limiter.Adaptive.HighWatermarkMs,
+			DecreaseRatio:   cfg.Limiter.Adaptive.DecreaseRatio,
+			IncreaseStep:    cfg.Limiter.Adaptive.IncreaseStep,
+			MinMultiplier:   cfg.Limiter.Adaptive.MinMultiplier,
+			EWMAAlpha:       cfg.Limiter.Adaptive.EWMAAlpha,
+		}
+		adaptiveLimiter = limiter.NewAdaptiveLimiter(primary, adaptiveCfg)
+		primary = adaptiveLimiter
+		slog.Info("adaptive limiter enabled",
+			"high_watermark_ms", cfg.Limiter.Adaptive.HighWatermarkMs,
+			"min_multiplier", cfg.Limiter.Adaptive.MinMultiplier)
+	}
+
+	// ── Fallback handler ─────────────────────────────────────────────────────
+	localLimiter := buildLocalLimiter(cfg.Limiter.Algorithm, limCfg)
 	fb := fallback.New(primary, localLimiter, fallback.Strategy(cfg.Limiter.FallbackStrategy))
 
-	// ── Local cache (in front of Redis) ─────────────────────────────────────
+	// ── Local cache ──────────────────────────────────────────────────────────
 	var localCache *cache.LocalCache
 	if cfg.Limiter.CacheTTL > 0 {
-		localCache = cache.New(cfg.Limiter.CacheTTL)
+		localCache = cache.New(appCtx, cfg.Limiter.CacheTTL)
 		slog.Info("local cache enabled", "ttl", cfg.Limiter.CacheTTL)
 	}
 
-	// ── Key extractor ────────────────────────────────────────────────────────
-	extractor := extractorFor(cfg.Limiter.KeyType)
+	// ── Penalty box ──────────────────────────────────────────────────────────
+	var penaltyBox *penalty.Box
+	if cfg.Limiter.Penalty.Enabled {
+		penaltyBox = penalty.New(rdb, penalty.Config{
+			Threshold:    cfg.Limiter.Penalty.Threshold,
+			StrikeWindow: cfg.Limiter.Penalty.StrikeWindow,
+			BasePenalty:  cfg.Limiter.Penalty.BasePenalty,
+			MaxPenalty:   cfg.Limiter.Penalty.MaxPenalty,
+		})
+		slog.Info("penalty box enabled",
+			"threshold", cfg.Limiter.Penalty.Threshold,
+			"base_penalty", cfg.Limiter.Penalty.BasePenalty)
+	}
+
+	// ── Cost function (cost-weighted limiting) ───────────────────────────────
+	costMap := buildCostMap(cfg.Routes)
+	costFn := func(r *http.Request) int64 {
+		if cost, ok := costMap[r.URL.Path]; ok {
+			return cost
+		}
+		return 1
+	}
 
 	// ── Middleware ───────────────────────────────────────────────────────────
-	rl := middleware.New(fb, localCache, extractor)
+	rl := middleware.New(fb, localCache, extractorFor(cfg.Limiter.KeyType), costFn, penaltyBox)
 
 	// ── HTTP routes ──────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
-	// demo endpoint
 	mux.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"message":"hello","time":%d}`, time.Now().Unix())
 	})
 
-	// health check — not rate limited
+	// Health check — not rate limited
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Prometheus metrics
 	if cfg.Metrics.Enabled {
 		mux.Handle(cfg.Metrics.Path, promhttp.Handler())
 	}
 
-	// apply rate limiting middleware to all /api/* routes
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(r.URL.Path, "/api") {
 			rl.Handler(mux).ServeHTTP(w, r)
 		} else {
 			mux.ServeHTTP(w, r)
@@ -126,13 +201,35 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
+	// ── Background: emit adaptive multiplier metric ──────────────────────────
+	if adaptiveLimiter != nil {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-appCtx.Done():
+					return
+				case <-ticker.C:
+					metrics.AdaptiveMultiplier.
+						WithLabelValues(adaptiveLimiter.Name()).
+						Set(adaptiveLimiter.Multiplier())
+				}
+			}
+		}()
+	}
+
 	// ── Graceful shutdown ────────────────────────────────────────────────────
 	go func() {
-		slog.Info("server starting", "port", cfg.Server.Port,
+		slog.Info("server starting",
+			"port", cfg.Server.Port,
 			"algorithm", cfg.Limiter.Algorithm,
 			"limit", cfg.Limiter.Limit,
 			"window", cfg.Limiter.Window,
 			"fallback", cfg.Limiter.FallbackStrategy,
+			"chain", cfg.Limiter.Chain.Enabled,
+			"adaptive", cfg.Limiter.Adaptive.Enabled,
+			"penalty", cfg.Limiter.Penalty.Enabled,
 		)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
@@ -143,6 +240,8 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+
+	appCancel() // stops cache eviction goroutine and adaptive metrics goroutine
 
 	slog.Info("shutting down server...")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -175,4 +274,16 @@ func extractorFor(keyType string) middleware.KeyExtractor {
 	default:
 		return middleware.ByIP
 	}
+}
+
+// buildCostMap builds an exact-path → cost lookup from route config.
+// O(1) per request; prefix matching can be added with a sorted slice if needed.
+func buildCostMap(routes []config.RouteConfig) map[string]int64 {
+	m := make(map[string]int64, len(routes))
+	for _, r := range routes {
+		if r.Cost > 1 {
+			m[r.Path] = r.Cost
+		}
+	}
+	return m
 }

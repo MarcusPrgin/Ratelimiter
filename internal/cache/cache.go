@@ -4,7 +4,9 @@
 package cache
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yourname/ratelimiter/internal/limiter"
@@ -21,19 +23,17 @@ type LocalCache struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
 	ttl     time.Duration
-
-	// metrics — read these from outside to populate Prometheus gauges
-	Hits   int64
-	Misses int64
+	hits    atomic.Int64
+	misses  atomic.Int64
 }
 
-func New(ttl time.Duration) *LocalCache {
+// New creates a LocalCache whose background eviction goroutine runs until ctx is cancelled.
+func New(ctx context.Context, ttl time.Duration) *LocalCache {
 	c := &LocalCache{
 		entries: make(map[string]*entry),
 		ttl:     ttl,
 	}
-	// background goroutine evicts expired entries every TTL period
-	go c.evictLoop()
+	go c.evictLoop(ctx)
 	return c
 }
 
@@ -44,15 +44,11 @@ func (c *LocalCache) Get(key string) (limiter.Result, bool) {
 	c.mu.RUnlock()
 
 	if !ok || time.Now().After(e.expiresAt) {
-		c.mu.Lock()
-		c.Misses++
-		c.mu.Unlock()
+		c.misses.Add(1)
 		return limiter.Result{}, false
 	}
 
-	c.mu.Lock()
-	c.Hits++
-	c.mu.Unlock()
+	c.hits.Add(1)
 	return e.result, true
 }
 
@@ -68,26 +64,31 @@ func (c *LocalCache) Set(key string, result limiter.Result) {
 
 // HitRate returns cache hit percentage. Safe to call from multiple goroutines.
 func (c *LocalCache) HitRate() float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	total := c.Hits + c.Misses
+	hits := c.hits.Load()
+	misses := c.misses.Load()
+	total := hits + misses
 	if total == 0 {
 		return 0
 	}
-	return float64(c.Hits) / float64(total) * 100
+	return float64(hits) / float64(total) * 100
 }
 
-func (c *LocalCache) evictLoop() {
+func (c *LocalCache) evictLoop(ctx context.Context) {
 	ticker := time.NewTicker(c.ttl)
 	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		c.mu.Lock()
-		for k, e := range c.entries {
-			if now.After(e.expiresAt) {
-				delete(c.entries, k)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			c.mu.Lock()
+			for k, e := range c.entries {
+				if now.After(e.expiresAt) {
+					delete(c.entries, k)
+				}
 			}
+			c.mu.Unlock()
 		}
-		c.mu.Unlock()
 	}
 }

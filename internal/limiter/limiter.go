@@ -7,25 +7,32 @@ import (
 	"time"
 )
 
-// Result is returned by every Allow call.
+// Result is returned by every Allow/AllowN call.
 type Result struct {
 	Allowed    bool
 	Limit      int64
 	Remaining  int64
-	ResetAfter time.Duration // how long until the window resets
-	RetryAfter time.Duration // only set when Allowed == false
+	ResetAfter time.Duration
+	RetryAfter time.Duration
+	// DeniedBy identifies which tier blocked the request. Set by ChainedLimiter;
+	// empty for single-tier limiters.
+	DeniedBy string
 }
 
 // Limiter is the single interface all algorithms implement.
 type Limiter interface {
+	// Allow is shorthand for AllowN(ctx, key, 1).
 	Allow(ctx context.Context, key string) (Result, error)
-	// Name returns the algorithm name for metrics labelling.
+	// AllowN checks whether n units of quota are available and, if so, consumes them.
+	// n must be >= 1. Implementations must be safe for concurrent use.
+	AllowN(ctx context.Context, key string, n int64) (Result, error)
+	// Name returns the algorithm identifier used in metrics labels.
 	Name() string
 }
 
-// Config holds per-key limit configuration.
+// Config holds per-limiter configuration.
 type Config struct {
-	Limit    int64         // max requests
+	Limit    int64         // max requests (or tokens) per Window
 	Window   time.Duration // time window
-	BurstMax int64         // for token bucket: max tokens above limit
+	BurstMax int64         // token bucket: max tokens above Limit
 }

@@ -7,7 +7,7 @@ redis:
   addr: "localhost:6379"    # override with RATELIMITER_REDIS_ADDR
   password: ""
   db: 0
-  pool_size: 20             # tune based on your node count × expected concurrency
+  pool_size: 20
   dial_timeout: 2s
   read_timeout: 1s
   write_timeout: 1s
@@ -17,36 +17,70 @@ limiter:
   algorithm: sliding_window_counter
 
   limit: 100          # requests per window
-  window: 1s          # window size
+  window: 1s
 
-  # token bucket only: max tokens above limit (allows controlled bursting)
+  # Token bucket: max tokens above limit (allows short controlled bursts)
   burst_max: 150
 
-  # local cache TTL — set to 0 to disable (always hit Redis)
-  # Tradeoff: higher TTL = faster decisions, less accurate counts
-  # With 3 nodes and 5ms TTL, worst-case over-admission is tiny.
-  # With 10 nodes and 50ms TTL, it can be significant — see README.
+  # Local cache TTL — set to 0 to always hit Redis.
+  # At TTL=5ms with 3 nodes, worst-case over-admission = 3 × 0.005 × 100 = 1.5 req/window.
   cache_ttl: 5ms
 
   # What to do when Redis is unreachable:
-  #   fail_open      — allow everything (good for non-critical APIs)
-  #   fail_closed    — deny everything (good for payment/auth)
-  #   local_fallback — use in-memory limiter (each node enforces independently)
+  #   fail_open      — allow everything  (good for non-critical APIs)
+  #   fail_closed    — deny everything   (good for payment / auth)
+  #   local_fallback — each node enforces independently (N nodes = N× effective limit)
   fallback_strategy: fail_open
 
   # How to identify callers:
-  #   ip     — use client IP (or X-Forwarded-For)
-  #   user   — use X-User-ID header
-  #   tenant — use X-Tenant-ID + X-User-ID headers
+  #   ip     — client IP (or X-Forwarded-For)
+  #   user   — X-User-ID header
+  #   tenant — X-Tenant-ID + X-User-ID (composite key)
   key_type: ip
 
-# Per-route overrides — these take precedence over the global limiter config
+  # ── Hierarchical (chained) limiting ──────────────────────────────────────
+  # Adds per-tenant and global tiers on top of the per-key limit.
+  # A request must pass all three tiers; the strictest one wins.
+  chain:
+    enabled: false
+    tenant_limit: 1000    # requests/window across all keys in one tenant
+    global_limit: 10000   # requests/window across the entire service
+
+  # ── Adaptive load shedding ────────────────────────────────────────────────
+  # Monitors inner-limiter latency via EWMA and applies AIMD:
+  #   - latency > high_watermark_ms → multiply pass-through by decrease_ratio
+  #   - latency < low_watermark_ms  → add increase_step to pass-through
+  # Set enabled: true only when using the Redis backend (in-memory is <1µs).
+  adaptive:
+    enabled: false
+    low_watermark_ms: 2.0     # healthy threshold
+    high_watermark_ms: 10.0   # overload threshold
+    decrease_ratio: 0.75      # multiplicative decrease on overload
+    increase_step: 0.05       # additive increase when healthy
+    min_multiplier: 0.1       # floor: always let at least 10% through
+    ewma_alpha: 0.1           # smoothing factor (lower = slower reaction)
+
+  # ── Penalty box ───────────────────────────────────────────────────────────
+  # After `threshold` consecutive denials within `strike_window`, the key
+  # enters a penalty that doubles on each subsequent violation (up to max_penalty).
+  penalty:
+    enabled: false
+    threshold: 10             # denials before first penalty
+    strike_window: 60s        # window in which strikes accumulate
+    base_penalty: 30s         # duration of first penalty
+    max_penalty: 3600s        # cap (1 hour)
+
+# ── Per-route overrides ────────────────────────────────────────────────────
+# cost: how many quota units this route consumes per request (default 1).
+# High-cost routes burn through the limit faster, protecting expensive endpoints.
+#
 # routes:
-#   - path: /api/checkout
-#     limit: 10
-#     window: 1s
 #   - path: /api/search
-#     limit: 500
+#     cost: 5               # counts as 5 normal requests
+#   - path: /api/export
+#     cost: 20
+#   - path: /api/checkout
+#     limit: 10             # separate limit for this route
 #     window: 1s
 
 metrics:

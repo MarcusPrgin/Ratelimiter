@@ -6,10 +6,9 @@ import (
 	"time"
 )
 
-// FixedWindow implements a fixed window counter.
-// Simple and fast, but vulnerable to boundary bursts:
-// a user can send 2× the limit by straddling two windows.
-// Keep this implementation — it's a useful demo of the failure mode.
+// FixedWindow is simple and fast but vulnerable to boundary bursts:
+// a caller can send 2× the limit by straddling two windows.
+// Keep this implementation as a useful demo of the failure mode.
 type FixedWindow struct {
 	mu      sync.Mutex
 	windows map[string]*fixedWindowEntry
@@ -28,24 +27,24 @@ func NewFixedWindow(cfg Config) *FixedWindow {
 	}
 }
 
-func (f *FixedWindow) Allow(_ context.Context, key string) (Result, error) {
+func (f *FixedWindow) Allow(ctx context.Context, key string) (Result, error) {
+	return f.AllowN(ctx, key, 1)
+}
+
+func (f *FixedWindow) AllowN(_ context.Context, key string, n int64) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	now := time.Now()
 	entry, ok := f.windows[key]
-
 	if !ok || now.After(entry.windowEnd) {
-		entry = &fixedWindowEntry{
-			count:     0,
-			windowEnd: now.Add(f.cfg.Window),
-		}
+		entry = &fixedWindowEntry{windowEnd: now.Add(f.cfg.Window)}
 		f.windows[key] = entry
 	}
 
 	resetAfter := entry.windowEnd.Sub(now)
 
-	if entry.count >= f.cfg.Limit {
+	if entry.count+n > f.cfg.Limit {
 		return Result{
 			Allowed:    false,
 			Limit:      f.cfg.Limit,
@@ -55,7 +54,7 @@ func (f *FixedWindow) Allow(_ context.Context, key string) (Result, error) {
 		}, nil
 	}
 
-	entry.count++
+	entry.count += n
 	return Result{
 		Allowed:    true,
 		Limit:      f.cfg.Limit,

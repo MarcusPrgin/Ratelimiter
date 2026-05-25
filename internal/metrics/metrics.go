@@ -35,24 +35,58 @@ var (
 		Name: "ratelimiter_active_keys",
 		Help: "Number of currently tracked rate limit keys.",
 	}, []string{"algorithm"})
+
+	// AdaptiveMultiplier tracks the current pass-through fraction (0.1–1.0).
+	// A value below 1.0 means the adaptive limiter is shedding load.
+	AdaptiveMultiplier = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ratelimiter_adaptive_multiplier",
+		Help: "Current adaptive pass-through multiplier (1.0 = no shedding).",
+	}, []string{"algorithm"})
+
+	// AdaptiveShed counts requests rejected by the adaptive shedding logic
+	// (distinct from normal rate-limit denials).
+	AdaptiveShed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ratelimiter_adaptive_shed_total",
+		Help: "Requests dropped by adaptive load shedding.",
+	}, []string{"algorithm"})
+
+	// PenaltyDenied counts requests blocked by the penalty box.
+	PenaltyDenied = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ratelimiter_penalty_denied_total",
+		Help: "Requests denied because the key is in the penalty box.",
+	}, []string{"algorithm", "key_type"})
+
+	// ChainTierDenied counts per-tier denials in a ChainedLimiter.
+	ChainTierDenied = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ratelimiter_chain_tier_denied_total",
+		Help: "Requests denied by a specific chain tier.",
+	}, []string{"tier"})
 )
 
-// ObserveRedis records a Redis operation latency.
 func ObserveRedis(operation string, start time.Time) {
 	RedisLatency.WithLabelValues(operation).Observe(time.Since(start).Seconds())
 }
 
-// RecordAllow increments the allowed counter.
 func RecordAllow(algorithm, keyType string) {
 	RequestsAllowed.WithLabelValues(algorithm, keyType).Inc()
 }
 
-// RecordDeny increments the denied counter.
 func RecordDeny(algorithm, keyType string) {
 	RequestsDenied.WithLabelValues(algorithm, keyType).Inc()
 }
 
-// UpdateCacheHitRatio sets the current cache hit ratio gauge.
 func UpdateCacheHitRatio(algorithm string, ratio float64) {
 	CacheHitRatio.WithLabelValues(algorithm).Set(ratio / 100)
+}
+
+func RecordAdaptiveShed(algorithm string) {
+	AdaptiveShed.WithLabelValues(algorithm).Inc()
+}
+
+func RecordPenaltyDeny(algorithm, keyType string) {
+	PenaltyDenied.WithLabelValues(algorithm, keyType).Inc()
+}
+
+func RecordChainTierDenied(tier string) {
+	ChainTierDenied.WithLabelValues(tier).Inc()
 }
