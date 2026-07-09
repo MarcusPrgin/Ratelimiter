@@ -92,7 +92,7 @@ func TestRemainingCountsDown(t *testing.T) {
 
 	for _, l := range newAll(cfg) {
 		t.Run(l.Name(), func(t *testing.T) {
-			var prev int64 = cfg.Limit
+			prev := cfg.Limit
 			for i := 0; i < 5; i++ {
 				r, _ := l.Allow(ctx, "user1")
 				if r.Remaining >= prev {

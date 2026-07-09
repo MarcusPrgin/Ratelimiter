@@ -173,13 +173,13 @@ func main() {
 
 	mux.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"message":"hello","time":%d}`, time.Now().Unix())
+		_, _ = fmt.Fprintf(w, `{"message":"hello","time":%d}`, time.Now().Unix())
 	})
 
 	// Health check — not rate limited
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	if cfg.Metrics.Enabled {

@@ -122,7 +122,7 @@ func TestChainedLimiter_FirstTierDenies(t *testing.T) {
 		limiter.ChainTier{Name: "global", Limiter: loose, KeyFunc: func(_ string) string { return "g" }},
 	)
 
-	chain.Allow(ctx, "user1") // exhaust per_key
+	chain.Allow(ctx, "user1") //nolint:errcheck // exhaust per_key
 	r, _ := chain.Allow(ctx, "user1")
 	if r.Allowed {
 		t.Fatal("second request should be denied by per_key tier")
@@ -142,7 +142,7 @@ func TestChainedLimiter_SecondTierDenies(t *testing.T) {
 		limiter.ChainTier{Name: "global", Limiter: tight, KeyFunc: func(_ string) string { return "g" }},
 	)
 
-	chain.Allow(ctx, "user1") // exhaust global tier
+	chain.Allow(ctx, "user1") //nolint:errcheck // exhaust global tier
 	r, _ := chain.Allow(ctx, "user1")
 	if r.Allowed {
 		t.Fatal("second request should be denied by global tier")
