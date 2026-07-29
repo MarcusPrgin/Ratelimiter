@@ -1,149 +1,145 @@
-# Setup Guide
+# Setup
 
-Everything you need to install before running this project.
+Everything runs locally; no cloud accounts are needed.
 
 ---
 
-## Prerequisites
+## What you need
 
-### 1. Go 1.22+
+| Tool | Version | Needed for |
+|---|---|---|
+| Go | 1.22+ | building and testing |
+| Docker Desktop | current | the full stack (Redis, Prometheus, Grafana) |
+| k6 | current | load tests only |
+| golangci-lint | current | `make lint` only |
 
-**macOS:**
+**The test suite needs none of these except Go.** Redis-backed code paths are covered
+by `miniredis`, which runs in-process, so `make test` works on a clean checkout.
+
+### Go
+
 ```bash
+# macOS
 brew install go
+
+# Linux
+wget https://go.dev/dl/go1.22.12.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.22.12.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
 ```
 
-**Linux:**
+Windows: installer from https://go.dev/dl/. Verify with `go version`.
+
+### Docker
+
+macOS / Windows: https://www.docker.com/products/docker-desktop/
+
 ```bash
-wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Windows:**
-Download installer from https://go.dev/dl/ and run it.
-
-Verify: `go version` → should show `go1.22` or higher.
-
----
-
-### 2. Docker Desktop
-
-Required for Redis, Prometheus, and Grafana containers.
-
-**macOS / Windows:** https://www.docker.com/products/docker-desktop/
-
-**Linux:**
-```bash
+# Linux
 curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # lets you run docker without sudo
-newgrp docker
+sudo usermod -aG docker $USER && newgrp docker
 ```
 
-Verify: `docker compose version` → should show `v2.x.x`.
+Verify with `docker compose version` (expect v2.x).
+
+### k6 — optional
+
+```bash
+brew install k6                          # macOS
+winget install k6 --source winget        # Windows
+```
+
+Linux: https://grafana.com/docs/k6/latest/set-up/install-k6/
+
+### golangci-lint — optional
+
+```bash
+brew install golangci-lint               # macOS
+```
+
+Otherwise: https://golangci-lint.run/usage/install/
 
 ---
 
-### 3. k6 (load testing)
-
-**macOS:**
-```bash
-brew install k6
-```
-
-**Linux:**
-```bash
-sudo gpg -k
-sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-  --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
-  | sudo tee /etc/apt/sources.list.d/k6.list
-sudo apt-get update && sudo apt-get install k6
-```
-
-**Windows:**
-```powershell
-winget install k6 --source winget
-```
-
-Verify: `k6 version`
-
----
-
-### 4. golangci-lint (optional, for `make lint`)
-
-**macOS:**
-```bash
-brew install golangci-lint
-```
-
-**Linux / Windows:** https://golangci-lint.run/usage/install/
-
----
-
-## Project setup
+## First run
 
 ```bash
-# 1. Clone or unzip the project
 cd ratelimiter
 
-# 2. Download Go dependencies
-make deps
-
-# 3. Run tests (no Docker needed for unit tests)
-make test-race
-
-# 4. Start the full stack
-make docker-up
-
-# 5. Verify everything is up
-curl http://localhost:8080/health       # → {"status":"ok"}
-curl http://localhost:9090/-/ready      # → Prometheus ready
-curl http://localhost:3000              # → Grafana (open in browser)
+make tidy          # download and verify dependencies
+make check         # validate config.yaml without starting anything
+make test          # full suite — no Docker, no Redis
+make docker-up     # app + Redis + Prometheus + Grafana + Redis exporter
 ```
 
+Confirm it came up:
+
+```bash
+curl -s http://localhost:8080/healthz     # {"status":"ok"}
+curl -s http://localhost:8080/readyz      # {"status":"ok","redis":"ok"}
+curl -i -H 'X-User-ID: alice' http://localhost:8080/api/hello
+curl -s http://localhost:8080/metrics | head
+open http://localhost:3000                # Grafana, dashboard pre-provisioned
+```
+
+`make help` lists every target.
+
 ---
 
-## Dependency summary
+## Optional: integration tests against a real Redis
 
-| Tool | Version | Purpose |
-|---|---|---|
-| Go | 1.22+ | Language runtime |
-| Docker Desktop | latest | Containers for Redis, Prometheus, Grafana |
-| k6 | latest | Load testing |
-| golangci-lint | latest | Optional linting |
+The unit tests run the Lua scripts on miniredis. To run them against real Redis as CI
+does:
 
-**No cloud accounts needed.** Everything runs locally.
+```bash
+docker run -d --name rl-redis -p 6399:6379 redis:7-alpine
+
+RATELIMITER_TEST_REDIS_ADDR=127.0.0.1:6399 \
+  go test -run TestIntegration -v ./internal/limiter/
+
+docker rm -f rl-redis
+```
+
+Redis 5 or newer is required, because the scripts read the clock with
+`redis.call('TIME')` and rely on effect replication.
 
 ---
 
-## Go module dependencies
+## Go dependencies
 
-These are downloaded automatically by `make deps` or `go mod download`:
+Downloaded automatically by `make tidy`.
 
-| Package | Purpose |
+| Module | Purpose |
 |---|---|
-| `github.com/redis/go-redis/v9` | Redis client with connection pooling |
-| `github.com/prometheus/client_golang` | Prometheus metrics instrumentation |
-| `github.com/spf13/viper` | Config file + environment variable loading |
-| `gopkg.in/yaml.v3` | YAML config parsing |
+| `github.com/redis/go-redis/v9` | Redis client with pooling and script management |
+| `github.com/prometheus/client_golang` | metrics |
+| `github.com/spf13/viper` | config file and environment loading |
+| `github.com/alicebob/miniredis/v2` | in-process Redis for tests |
 
 ---
 
 ## Troubleshooting
 
-**`docker: command not found`**
-Docker Desktop isn't installed or isn't in your PATH. Restart your terminal after installing.
+**`invalid configuration:` on startup**
+Working as intended — the message lists every problem at once. Unknown keys are
+rejected too, so check for typos in `config.yaml`. Run `make check` to iterate without
+starting the server.
 
 **`connection refused` on Redis**
-Redis container isn't healthy yet. Wait 10 seconds and retry, or run `docker compose ps` to check status.
-
-**`go: command not found`**
-Go isn't in your PATH. Add `/usr/local/go/bin` (Linux) or `$(go env GOPATH)/bin` to your `$PATH`.
+The container may not be healthy yet; `docker compose ps` shows status. The service
+starts anyway and applies `limiter.fallback.strategy`, logging a warning — that is
+deliberate, so a Redis outage does not also take this service down.
 
 **Port 8080 already in use**
-Change `server.port` in `config.yaml` to `8081` and update k6 scripts accordingly.
+Change `server.port` in `config.yaml`, or run the load tests against another host with
+`BASE_URL=http://localhost:8081 k6 run k6/steady.js`.
 
-**k6 tests fail with `connection refused`**
-The server must be running before you run k6. Run `make docker-up` first, then `make k6-steady`.
+**Every request returns 503**
+`limiter.fallback.strategy` is `fail_closed` and Redis is unreachable. That is the
+strategy working. Check `/readyz` and the `ratelimiter_breaker_open` metric.
+
+**`go: command not found` / `docker: command not found`**
+Not on `PATH`; restart the terminal after installing.
+
+**k6 reports connection refused**
+The server must already be running: `make docker-up` before `make k6-steady`.

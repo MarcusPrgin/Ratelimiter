@@ -2,7 +2,15 @@ bin/
 *.exe
 *.test
 *.out
+
+# Generated reports
 docs/benchmarks.txt
+docs/coverage.out
+docs/coverage.html
 docs/k6-*.json
+
+# Secrets
 .env
+.env.*
+
 vendor/

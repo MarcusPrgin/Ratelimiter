@@ -2,15 +2,60 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # Unit tests. These cover the Redis paths too, via miniredis, so no service is
+  # needed here.
   test:
     name: Test
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          # Track go.mod rather than a duplicated literal that can drift from it.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - run: go vet ./...
+
+      - name: Test with the race detector
+        run: go test -race -timeout 180s ./...
+
+      - name: Validate the shipped config
+        run: go run ./cmd/server -config config.yaml -check
+
+  # The same Lua scripts against a real Redis. miniredis is a reimplementation with
+  # its own Lua host, so this is what stops the two from quietly diverging on
+  # redis.call('TIME'), INCRBY against a missing key, or PEXPIRE semantics.
+  integration:
+    name: Integration (real Redis)
+    runs-on: ubuntu-latest
     services:
       redis:
         image: redis:7-alpine
@@ -21,29 +66,33 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test with race detector
-        run: go test -race -timeout 60s ./...
+      - name: Run integration tests
         env:
-          RATELIMITER_REDIS_ADDR: localhost:6379
+          RATELIMITER_TEST_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -race -timeout 180s -run TestIntegration -v ./internal/limiter/...
 
-      - name: Benchmark (sanity check only)
-        run: go test -bench=. -benchtime=1s -run='^$$' ./internal/limiter/...
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A sanity run, not a performance gate: shared CI runners are far too noisy to
+      # compare timings against a threshold.
+      - run: go test -bench=. -benchmem -benchtime=200ms -run='^$' ./internal/...
 
   lint:
     name: Lint
@@ -52,9 +101,39 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
+      - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t ratelimiter:ci .
+
+      - name: Check it starts and serves
+        run: |
+          docker run -d --name rl -p 8080:8080 \
+            -e RATELIMITER_LIMITER_FALLBACK_STRATEGY=fail_open \
+            ratelimiter:ci
+          # Redis is absent here deliberately: with fail_open the service must still
+          # start and serve traffic, which is exactly what that strategy promises.
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
+              echo "liveness ok"
+              curl -fsS -o /dev/null -w 'api status: %{http_code}\n' \
+                http://localhost:8080/api/hello
+              docker rm -f rl
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "service did not become healthy"
+          docker logs rl
+          docker rm -f rl
+          exit 1

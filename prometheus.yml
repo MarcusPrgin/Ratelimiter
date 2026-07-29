@@ -8,6 +8,9 @@ scrape_configs:
       - targets: ['app:8080']
     metrics_path: /metrics
 
+  # Via the exporter, not Redis itself. Redis speaks RESP, not the Prometheus
+  # exposition format, so pointing a scrape job at redis:6379 only ever produced a
+  # permanently failing target.
   - job_name: 'redis'
     static_configs:
-      - targets: ['redis:6379']
+      - targets: ['redis-exporter:9121']

@@ -1,72 +1,169 @@
 {
-  "title": "Rate Limiter Dashboard",
+  "title": "Rate Limiter",
   "uid": "ratelimiter-main",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Requests allowed / sec",
+      "title": "Decisions / sec",
+      "description": "Admitted versus refused. A denial rate that is high but stable is the limiter working as configured; one that climbs while allowed traffic falls means callers are being squeezed.",
       "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
-      "targets": [{
-        "expr": "rate(ratelimiter_requests_allowed_total[30s])",
-        "legendFormat": "{{algorithm}} / {{key_type}}"
-      }],
+      "targets": [
+        {"expr": "sum(rate(ratelimiter_requests_allowed_total[1m]))", "legendFormat": "allowed"},
+        {"expr": "sum(rate(ratelimiter_requests_denied_total[1m]))", "legendFormat": "denied"}
+      ],
       "fieldConfig": {"defaults": {"unit": "reqps"}}
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Requests denied / sec",
+      "title": "Denials by reason",
+      "description": "Which stage refused the request. 'quota' is ordinary throttling; 'penalty' is an escalated abuser; 'adaptive_shed' is load shedding; 'limiter_unavailable' is fail_closed with Redis down; a chain tier name means that tier bound first.",
       "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
-      "targets": [{
-        "expr": "rate(ratelimiter_requests_denied_total[30s])",
-        "legendFormat": "{{algorithm}} / {{key_type}}"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"fixedColor": "red", "mode": "fixed"}}}
+      "targets": [
+        {"expr": "sum by (denied_by) (rate(ratelimiter_requests_denied_total[1m]))", "legendFormat": "{{denied_by}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}}
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Redis latency p50 / p99",
+      "title": "Limiter latency",
+      "description": "Time spent in the limiter chain. A lease hit is microseconds and a Redis round trip milliseconds, so p50 sitting well below p99 is the lease cache doing its job.",
       "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
       "targets": [
-        {
-          "expr": "histogram_quantile(0.5, rate(ratelimiter_redis_latency_seconds_bucket[30s]))",
-          "legendFormat": "p50"
-        },
-        {
-          "expr": "histogram_quantile(0.99, rate(ratelimiter_redis_latency_seconds_bucket[30s]))",
-          "legendFormat": "p99"
-        }
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(ratelimiter_limiter_latency_seconds_bucket[1m])))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(ratelimiter_limiter_latency_seconds_bucket[1m])))", "legendFormat": "p99"}
       ],
       "fieldConfig": {"defaults": {"unit": "s"}}
     },
     {
       "id": 4,
-      "type": "gauge",
-      "title": "Cache hit ratio",
+      "type": "timeseries",
+      "title": "Lease hit ratio",
+      "description": "Fraction of requests answered locally without touching Redis. With prefetch=N the ceiling is about N/(N+1); a ratio near zero means keys are too sparse for leasing to help.",
       "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
-      "targets": [{
-        "expr": "ratelimiter_cache_hit_ratio * 100",
-        "legendFormat": "{{algorithm}}"
-      }],
+      "targets": [{"expr": "ratelimiter_lease_hit_ratio", "legendFormat": "hit ratio"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Redis calls avoided",
+      "description": "Lease hits versus misses. Only the misses cost a Redis round trip.",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "sum(rate(ratelimiter_lease_hits_total[1m]))", "legendFormat": "served locally"},
+        {"expr": "sum(rate(ratelimiter_lease_misses_total[1m]))", "legendFormat": "reached Redis"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Adaptive shedding",
+      "description": "The AIMD pass-through multiplier against the smoothed latency driving it. A multiplier below 1 means latency crossed the high watermark and the limiter is protecting Redis.",
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "ratelimiter_adaptive_multiplier", "legendFormat": "multiplier"},
+        {"expr": "ratelimiter_adaptive_latency_ms", "legendFormat": "smoothed latency (ms)"}
+      ],
+      "fieldConfig": {
+        "defaults": {"min": 0},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "smoothed latency (ms)"},
+            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Circuit breaker",
+      "description": "Open means Redis is being bypassed entirely and the fallback strategy is in force.",
+      "gridPos": {"x": 0, "y": 24, "w": 6, "h": 6},
+      "targets": [{"expr": "max(ratelimiter_breaker_open)", "legendFormat": "state"}],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "closed", "color": "green", "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "OPEN", "color": "red", "index": 1}}}
+          ],
           "thresholds": {
-            "steps": [
-              {"color": "red", "value": 0},
-              {"color": "yellow", "value": 60},
-              {"color": "green", "value": 85}
-            ]
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]
           }
         }
       }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Degraded requests / sec",
+      "description": "Requests served by the fallback strategy rather than by Redis. Any sustained value means the configured limit is not actually being enforced.",
+      "gridPos": {"x": 6, "y": 24, "w": 9, "h": 6},
+      "targets": [{"expr": "sum(rate(ratelimiter_degraded_total[1m]))", "legendFormat": "degraded"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"mode": "fixed", "fixedColor": "orange"}}}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "In-flight requests",
+      "gridPos": {"x": 15, "y": 24, "w": 9, "h": 6},
+      "targets": [{"expr": "sum(ratelimiter_requests_in_flight)", "legendFormat": "in flight"}],
+      "fieldConfig": {"defaults": {"min": 0}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Penalty box",
+      "description": "Escalations are keys newly blocked; denials are requests refused by an active penalty, none of which cost a Redis round trip.",
+      "gridPos": {"x": 0, "y": 30, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "sum(rate(ratelimiter_penalty_escalations_total[5m]))", "legendFormat": "escalations"},
+        {"expr": "sum(rate(ratelimiter_penalty_denied_total[1m]))", "legendFormat": "denials absorbed"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Tracked keys",
+      "description": "Keys held in each bounded in-memory map. Flatlining at the configured max_keys means eviction is running continuously and the bound wants raising.",
+      "gridPos": {"x": 12, "y": 30, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (component) (ratelimiter_tracked_keys)", "legendFormat": "{{component}}"}],
+      "fieldConfig": {"defaults": {"min": 0}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Errors and panics",
+      "description": "Limiter errors the fallback did not handle, and panics recovered by the middleware. Both should sit at zero.",
+      "gridPos": {"x": 0, "y": 38, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "sum(rate(ratelimiter_limiter_errors_total[5m]))", "legendFormat": "limiter errors"},
+        {"expr": "sum(rate(ratelimiter_handler_panics_total[5m]))", "legendFormat": "panics"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"mode": "fixed", "fixedColor": "red"}}}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Redis server",
+      "description": "From the Redis exporter, for correlating limiter latency with Redis itself.",
+      "gridPos": {"x": 12, "y": 38, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "sum(rate(redis_commands_processed_total[1m]))", "legendFormat": "commands/sec"},
+        {"expr": "redis_connected_clients", "legendFormat": "clients"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0}}
     }
   ]
 }

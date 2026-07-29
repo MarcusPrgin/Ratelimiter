@@ -1,4 +1,4 @@
-version: "3.9"
+# The `version` key is obsolete under Compose v2 and only produces a warning.
 
 services:
   # ── App ──────────────────────────────────────────────────────────────────
@@ -11,22 +11,59 @@ services:
       - RATELIMITER_LIMITER_LIMIT=100
       - RATELIMITER_LIMITER_WINDOW=1s
       - RATELIMITER_LIMITER_FALLBACK_STRATEGY=fail_open
+      - RATELIMITER_LOG_LEVEL=info
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # The image defines a liveness HEALTHCHECK; declaring it here too lets other
+    # services gate on it.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          # A bound here is what turns "the key map grew unexpectedly" into a
+          # contained restart instead of a host running out of memory.
+          memory: 512M
 
   # ── Redis ────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # No persistence: rate limit counters are worthless after a restart, and fsync
+    # on the request path is the last thing this workload needs. allkeys-lru means a
+    # memory ceiling sheds cold keys rather than returning OOM errors, which the
+    # fallback strategy would then treat as an outage.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 2s
       retries: 10
+    restart: unless-stopped
+
+  # ── Redis metrics ────────────────────────────────────────────────────────
+  # Redis does not speak the Prometheus exposition format, so scraping :6379
+  # directly never worked. This exporter is what actually provides those metrics.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    command: ["--redis.addr=redis://redis:6379"]
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Prometheus ───────────────────────────────────────────────────────────
@@ -47,6 +84,8 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # Anonymous admin is fine for a local stack and must not be copied into a
+      # deployed one.
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true

@@ -1,88 +1,196 @@
+# Distributed rate limiter configuration.
+#
+# Every value below can be overridden by an environment variable: uppercase the
+# path, replace dots with underscores, prefix with RATELIMITER_. For example
+#   limiter.limit          -> RATELIMITER_LIMITER_LIMIT=500
+#   limiter.fallback.strategy -> RATELIMITER_LIMITER_FALLBACK_STRATEGY=fail_closed
+#
+# Unknown keys are a startup error, not a warning. A typo in a setting you believe
+# you enabled is worse than a crash, because a misconfigured rate limiter still
+# returns 200s and nothing looks wrong until the thing it protects falls over.
+# Validate without starting the server: ./bin/server -config config.yaml -check
+
 server:
   port: 8080
   read_timeout: 5s
   write_timeout: 10s
+  idle_timeout: 60s
+  # How long in-flight requests get to finish after SIGTERM.
+  shutdown_timeout: 15s
 
 redis:
-  addr: "localhost:6379"    # override with RATELIMITER_REDIS_ADDR
-  password: ""
+  addr: "localhost:6379"    # RATELIMITER_REDIS_ADDR
+  password: ""              # prefer RATELIMITER_REDIS_PASSWORD over committing this
   db: 0
   pool_size: 20
+  # Warm connections, so a traffic spike does not pay TCP and auth setup on the
+  # request path.
+  min_idle_conns: 5
   dial_timeout: 2s
-  read_timeout: 1s
-  write_timeout: 1s
+  # Deliberately tight. A limiter call is on the critical path of every request, so
+  # waiting seconds for Redis is worse than falling back; the circuit breaker below
+  # is what stops a sustained outage from paying even this much per request.
+  read_timeout: 500ms
+  write_timeout: 500ms
+  # Keep low: retrying multiplies latency during exactly the incident where added
+  # latency does the most damage. Sustained failure is the breaker's job.
+  max_retries: 1
 
 limiter:
-  # Options: sliding_window_counter | token_bucket | fixed_window | sliding_window_log
+  # sliding_window_counter — smooth enforcement, no boundary burst. Two counters per
+  #   key, interpolated. The right default for protecting a backend.
+  # token_bucket — allows an idle caller to burst up to burst_max, then holds it to
+  #   the steady rate. What AWS and Stripe expose on their APIs.
   algorithm: sliding_window_counter
 
-  limit: 100          # requests per window
-  window: 1s
+  limit: 100          # quota units per window
+  window: 1s          # >= 1ms
 
-  # Token bucket: max tokens above limit (allows short controlled bursts)
-  burst_max: 150
+  # Token bucket capacity. 0 means "same as limit" (no bursting above the steady
+  # rate). Ignored by the sliding window counter.
+  burst_max: 0
 
-  # Local cache TTL — set to 0 to always hit Redis.
-  # At TTL=5ms with 3 nodes, worst-case over-admission = 3 × 0.005 × 100 = 1.5 req/window.
-  cache_ttl: 5ms
-
-  # What to do when Redis is unreachable:
-  #   fail_open      — allow everything  (good for non-critical APIs)
-  #   fail_closed    — deny everything   (good for payment / auth)
-  #   local_fallback — each node enforces independently (N nodes = N× effective limit)
-  fallback_strategy: fail_open
-
-  # How to identify callers:
-  #   ip     — client IP (or X-Forwarded-For)
-  #   user   — X-User-ID header
-  #   tenant — X-Tenant-ID + X-User-ID (composite key)
+  # How callers are identified:
+  #   ip     — client address
+  #   user   — X-User-ID, falling back to the address
+  #   tenant — X-Tenant-ID + X-User-ID composite (required by limiter.chain)
   key_type: ip
 
-  # ── Hierarchical (chained) limiting ──────────────────────────────────────
-  # Adds per-tenant and global tiers on top of the per-key limit.
-  # A request must pass all three tiers; the strictest one wins.
+  # How many reverse proxies sit in front of this service.
+  #
+  # 0 ignores X-Forwarded-For and uses the socket peer address. That is the safe
+  # default: trusting the header lets any caller pick its own limit key, and so its
+  # own quota, just by varying it. Set this to the real number of proxies and the
+  # client address is located by counting from the right of the header — the part a
+  # caller cannot forge, because it is what your own proxies appended.
+  trusted_proxy_hops: 0
+
+  # Upper bound on keys held in each in-memory map. An unbounded map is a
+  # denial-of-service vector: IP-keyed traffic from a large botnet grows it until
+  # the process is OOM-killed. Least-recently-used keys are evicted past this.
+  max_keys: 1048576
+
+  # ── What to do when Redis is unreachable ──────────────────────────────────
+  fallback:
+    #   fail_open      — admit everything. For search, recommendations, content.
+    #   fail_closed    — refuse everything (503). For payments, auth, anything that
+    #                    spends money or grants access.
+    #   local_fallback — each node enforces from its own memory; N nodes admit
+    #                    roughly N× the limit, but enforcement stays proportional.
+    strategy: fail_open
+
+    # Consecutive failures that open the circuit. Without a breaker, every request
+    # waits out the Redis timeout before falling back, so an outage in a dependency
+    # meant to be bypassed instead adds its full timeout to every response.
+    # 0 disables the breaker.
+    breaker_threshold: 5
+    # How long the circuit stays open before one probe is allowed through.
+    breaker_cooldown: 2s
+
+  # ── Local quota leasing ───────────────────────────────────────────────────
+  # Claims quota from Redis in blocks and hands it out locally, so a hot key costs
+  # roughly one round trip per (prefetch + 1) requests.
+  #
+  # This is not a cache of decisions. Caching the decision is the obvious approach
+  # and it silently breaks the limit: with a 5ms TTL and one key at 1000 rps, only
+  # ~200 requests reach Redis and the other ~800 are admitted having consumed
+  # nothing, so a limit of 100/s admits 1000/s. Leasing counts the units centrally
+  # before handing them out, so the limit is never exceeded. The only error is
+  # unspent lease on a key that goes idle, which under-admits — the safe direction.
+  lease:
+    enabled: true
+    # Bounds how long a lease or cached denial is held. Also capped per entry by the
+    # quota's own reset deadline, so a lease never outlives its window.
+    ttl: 50ms
+    # Extra units to claim per miss. Higher means fewer round trips and more quota
+    # potentially left unspent. 0 disables leasing, leaving only negative_cache.
+    #
+    # Two rules keep batching from wasting quota, so this can be raised without the
+    # limit under-admitting:
+    #   - A key's first miss claims no prefetch; batching starts once the key is
+    #     established. Otherwise a simultaneous burst on a cold key has every
+    #     concurrent request claim a batch before any lease exists, stranding quota
+    #     that was already counted centrally.
+    #   - The prefetch shrinks as the reported headroom runs out, so the last few
+    #     units are claimed one at a time and sustained traffic lands exactly on the
+    #     limit rather than one batch short of it.
+    prefetch: 4
+    # Answer already-denied callers locally. This is what absorbs an abusive caller:
+    # once over quota it costs no round trip at all.
+    negative_cache: true
+
+  # ── Hierarchical tiers ────────────────────────────────────────────────────
+  # Adds per-tenant and global ceilings above the per-caller limit. A request must
+  # pass every tier, and X-RateLimit-Denied-By reports which one refused it, so a
+  # client can tell "you are over your quota" from "the service is saturated".
+  #
+  # Every tier is backed by Redis, so the global ceiling really is global.
+  # Requires key_type: tenant.
   chain:
     enabled: false
-    tenant_limit: 1000    # requests/window across all keys in one tenant
-    global_limit: 10000   # requests/window across the entire service
+    tenant_limit: 1000    # units/window across all callers in one tenant
+    global_limit: 10000   # units/window across the whole service
 
   # ── Adaptive load shedding ────────────────────────────────────────────────
-  # Monitors inner-limiter latency via EWMA and applies AIMD:
-  #   - latency > high_watermark_ms → multiply pass-through by decrease_ratio
-  #   - latency < low_watermark_ms  → add increase_step to pass-through
-  # Set enabled: true only when using the Redis backend (in-memory is <1µs).
+  # Watches limiter latency and sheds a fraction of requests when Redis slows down,
+  # on the principle that sending more traffic to a struggling dependency makes it
+  # worse for everyone. AIMD, the same control law as TCP congestion control: back
+  # off sharply, recover gently, because the asymmetry damps oscillation.
   adaptive:
     enabled: false
-    low_watermark_ms: 2.0     # healthy threshold
-    high_watermark_ms: 10.0   # overload threshold
+    low_watermark_ms: 2.0     # below this, recover
+    high_watermark_ms: 10.0   # above this, shed harder
     decrease_ratio: 0.75      # multiplicative decrease on overload
     increase_step: 0.05       # additive increase when healthy
-    min_multiplier: 0.1       # floor: always let at least 10% through
-    ewma_alpha: 0.1           # smoothing factor (lower = slower reaction)
+    min_multiplier: 0.1       # floor, so it never sheds everything
+    ewma_alpha: 0.1           # latency smoothing; lower reacts more slowly
+    # Minimum time between adjustments. This is what makes it a controller rather
+    # than a counter: stepping once per request ties the response rate to traffic
+    # volume, so a busy service slams to the floor in a millisecond and a quiet one
+    # never recovers at all.
+    adjust_interval: 100ms
+    # Retry-After advertised on a shed request. Shedding is about total load, not
+    # the caller's quota, so there is no per-key reset time to report.
+    shed_retry_after: 1s
 
   # ── Penalty box ───────────────────────────────────────────────────────────
-  # After `threshold` consecutive denials within `strike_window`, the key
-  # enters a penalty that doubles on each subsequent violation (up to max_penalty).
+  # A caller that keeps hammering a limit after being denied is not deterred by more
+  # 429s, and costs a round trip either way. After `threshold` denials inside
+  # `strike_window` the key is blocked outright, doubling on each further offence.
   penalty:
     enabled: false
-    threshold: 10             # denials before first penalty
-    strike_window: 60s        # window in which strikes accumulate
-    base_penalty: 30s         # duration of first penalty
-    max_penalty: 3600s        # cap (1 hour)
+    threshold: 10
+    strike_window: 60s
+    base_penalty: 30s
+    max_penalty: 1h
+    # Bounds how often one key's penalty state is re-read from Redis. Without it,
+    # enforcing a shared penalty costs a round trip on every request, including the
+    # overwhelming majority from callers with no penalty at all. The cost is that a
+    # penalty applied on one node takes up to this long to be honoured by the
+    # others — immaterial against a base_penalty measured in tens of seconds.
+    check_interval: 1s
 
-# ── Per-route overrides ────────────────────────────────────────────────────
-# cost: how many quota units this route consumes per request (default 1).
-# High-cost routes burn through the limit faster, protecting expensive endpoints.
+# ── Per-route quota cost ───────────────────────────────────────────────────
+# Expensive endpoints consume more of the same quota, which is how OpenAI, Anthropic
+# and Stripe meter by compute rather than by request count.
 #
-# routes:
-#   - path: /api/search
-#     cost: 5               # counts as 5 normal requests
-#   - path: /api/export
-#     cost: 20
-#   - path: /api/checkout
-#     limit: 10             # separate limit for this route
-#     window: 1s
+# Paths match exactly. Cost must be >= 1 and must not exceed the per-window
+# capacity — a route that can never be served is rejected at startup rather than
+# returning 400 forever in production.
+#
+# Per-route limit and window are deliberately unsupported: they need a separate
+# limiter instance and Redis keyspace per route, and accepting the fields while
+# ignoring them is worse than not offering them.
+routes:
+  - path: /api/search
+    cost: 5
+  - path: /api/export
+    cost: 20
 
 metrics:
   enabled: true
   path: /metrics
+
+log:
+  level: info     # debug | info | warn | error
+  format: json    # json | text

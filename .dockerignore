@@ -1,0 +1,26 @@
+# Keep the build context small and free of anything that could leak into an image.
+.git
+.github
+.claude
+
+# Build output and local artefacts
+bin/
+docs/
+*.test
+*.out
+*.exe
+
+# Secrets must never enter the build context
+.env
+.env.*
+*.pem
+*.key
+
+# Not needed to compile or run the service
+README.md
+SETUP.md
+k6/
+grafana/
+prometheus.yml
+docker-compose.yml
+Makefile

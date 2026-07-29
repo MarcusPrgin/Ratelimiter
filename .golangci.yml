@@ -1,0 +1,47 @@
+version: "2"
+
+# The linter set is deliberately narrow: every one of these has caught a real defect in
+# this codebase, rather than enforcing a house style.
+#
+#   unused    — found a map method and an error-wrapper that nothing called
+#   unparam   — found a parameter left behind when a function's logic changed
+#   errcheck  — an unchecked write is how a failed response goes unnoticed
+#   nilerr    — returning nil after checking an error is the shape of the original
+#               fail_closed bug, where a decision was made and the error dropped
+#   bodyclose — leaked response bodies exhaust connections under load
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+
+  settings:
+    govet:
+      enable:
+        - shadow
+
+  exclusions:
+    rules:
+      # Table-driven tests routinely ignore returns whose failure the assertion below
+      # would catch anyway.
+      - path: _test\.go$
+        linters:
+          - errcheck
+          - unparam
+      # Shadowing `err` inside a short block is idiomatic Go and reads better than
+      # inventing err2.
+      - linters:
+          - govet
+        text: 'shadow: declaration of "err"'
+
+formatters:
+  enable:
+    - gofmt
