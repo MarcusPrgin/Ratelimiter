@@ -481,6 +481,12 @@ func TestConfigValidation(t *testing.T) {
 		{"zero threshold", mutate(func(c *penalty.Config) { c.Threshold = 0 }), false},
 		{"zero strike window", mutate(func(c *penalty.Config) { c.StrikeWindow = 0 }), false},
 		{"zero base penalty", mutate(func(c *penalty.Config) { c.BasePenalty = 0 }), false},
+		// Penalties reach Redis as integer millisecond TTLs, so a sub-millisecond one
+		// truncates to zero and PEXPIRE rejects it — the box would count strikes and
+		// then fail every escalation, never actually penalising anyone.
+		{"sub-millisecond base penalty", mutate(func(c *penalty.Config) {
+			c.BasePenalty = 500 * time.Microsecond
+		}), false},
 		{"max below base", mutate(func(c *penalty.Config) {
 			c.BasePenalty, c.MaxPenalty = time.Minute, time.Second
 		}), false},
