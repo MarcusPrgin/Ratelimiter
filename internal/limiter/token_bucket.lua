@@ -63,4 +63,13 @@ local reset_after = math.ceil((burst - tokens) / rate)
 redis.call('HSET', key, 'tk', string.format('%.6f', tokens), 'ts', string.format('%d', now))
 redis.call('PEXPIRE', key, reset_after + slack)
 
-return { allowed, math.floor(tokens), reset_after, retry }
+-- Remaining is reported as zero on a denial, matching sliding_window.lua and both
+-- in-memory limiters. The leftover fractional tokens are real but unusable: the
+-- request was refused, so advertising them in X-RateLimit-Remaining alongside a 429
+-- tells the client it has quota it cannot spend.
+local remaining = 0
+if allowed == 1 then
+    remaining = math.floor(tokens)
+end
+
+return { allowed, remaining, reset_after, retry }
