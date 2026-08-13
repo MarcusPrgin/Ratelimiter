@@ -383,9 +383,12 @@ func routes(cfg *config.Config, rdb *redis.Client, mw *middleware.RateLimiter,
 	// Liveness: is the process itself healthy. Must not depend on Redis — a
 	// dependency outage would otherwise make the orchestrator restart every node
 	// during the exact incident the fallback strategy exists to survive.
-	root.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	liveness := func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	}
+	root.HandleFunc("/healthz", liveness)
+	// Kept as an alias so existing probes and compose healthchecks keep working.
+	root.HandleFunc("/health", liveness)
 
 	// Readiness: can this node serve correctly, which does include Redis.
 	root.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -400,11 +403,6 @@ func routes(cfg *config.Config, rdb *redis.Client, mw *middleware.RateLimiter,
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "redis": "ok"})
-	})
-
-	// Kept as an alias so existing probes and compose healthchecks keep working.
-	root.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	if cfg.Metrics.Enabled {
