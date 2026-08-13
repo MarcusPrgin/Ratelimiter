@@ -157,6 +157,12 @@ func (l *LeaseCache) AllowN(ctx context.Context, key string, n int64) (Result, e
 		return Result{}, err
 	}
 	l.store(key, n, granted, res, now)
+	// store needs the shared limiter's own headroom, but the caller must not: the
+	// prefetched units were charged to this key centrally and are still its to spend,
+	// so counting them as consumed under-reports the quota by the whole prefetch.
+	if res.Allowed && res.Limit > 0 {
+		res.Remaining += granted - n
+	}
 	return res, nil
 }
 
@@ -193,9 +199,13 @@ func (l *LeaseCache) local(key string, n int64, now time.Time) (res Result, deci
 		if e.units >= n {
 			e.units -= n
 			res = Result{
-				Allowed:    true,
-				Limit:      e.limit,
-				Remaining:  e.units,
+				Allowed: true,
+				Limit:   e.limit,
+				// The shared limiter's headroom plus the units still held locally.
+				// Reporting only the local units makes X-RateLimit-Remaining sawtooth
+				// — 95 on a miss, then 3, 2, 1, 0 across the lease, then 90 — which
+				// reads to a client as though its quota had collapsed and recovered.
+				Remaining:  nonNegativeInt(e.remaining) + e.units,
 				ResetAfter: nonNegative(e.resetAt.Sub(now)),
 			}
 			decided = true
@@ -367,4 +377,13 @@ func nonNegative(d time.Duration) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// nonNegativeInt floors a count at zero. leaseEntry.remaining uses -1 for "unknown",
+// which must not be added into a reported figure as if it were a real deficit.
+func nonNegativeInt(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
