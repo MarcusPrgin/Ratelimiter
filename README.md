@@ -3,11 +3,15 @@
 [![CI](https://github.com/MarcusPrgin/Ratelimiter/actions/workflows/ci.yml/badge.svg)](https://github.com/MarcusPrgin/Ratelimiter/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Redis](https://img.shields.io/badge/redis-5%2B-DC382D?logo=redis&logoColor=white)](https://redis.io)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A distributed rate limiter in Go. Two algorithms, Redis-backed shared state, quota
-leasing to cut round trips without losing accuracy, three failure strategies behind a
-circuit breaker, adaptive load shedding, hierarchical tiers, cost-weighted quota and
-an escalating penalty box — with Prometheus metrics and a Grafana dashboard.
+A production-shaped distributed rate limiter in Go, backed by Redis.
+
+Two algorithms enforced atomically in Lua, quota leasing that removes ~80% of Redis
+round trips **without** admitting anything Redis has not already counted, and a
+circuit breaker in front of three genuinely distinct failure strategies. Hierarchical
+tiers, cost-weighted quota, adaptive load shedding and an escalating penalty box sit
+on top, with Prometheus metrics and a provisioned Grafana dashboard.
 
 ```bash
 make docker-up
@@ -16,20 +20,37 @@ curl -i -H 'X-User-ID: alice' http://localhost:8080/api/hello
 
 ---
 
+## At a glance
+
+| | |
+|---|---|
+| **Correctness under concurrency** | 500 concurrent requests against a limit of 100 admit **exactly** 100. Asserted, not assumed. |
+| **Cost of the fast path** | A lease hit is **45.7 ns**, allocation-free — ~1,900× cheaper than a Redis round trip. |
+| **Tests** | 131 tests, 8 benchmarks. 86–96% statement coverage across the core packages. |
+| **CI** | Race detector, real-Redis integration, lint, benchmarks, and a Docker image that must boot and serve. |
+| **Dependencies** | 5 direct: go-redis, Prometheus client, Viper, mapstructure, miniredis. |
+| **Size** | ~8.2k lines of Go, of which ~4.3k are tests. |
+
+New to the repo? [`SETUP.md`](SETUP.md) covers prerequisites and first run.
+`make help` lists every target.
+
+---
+
 ## Contents
 
 - [Features](#features)
-- [How it fits together](#how-it-fits-together)
-- [Running it](#running-it)
+- [Architecture](#architecture)
+- [Running the service](#running-the-service)
 - [Configuration](#configuration)
-- [The two algorithms](#the-two-algorithms)
+- [Algorithms](#algorithms)
 - [Design decisions](#design-decisions)
 - [Metrics](#metrics)
 - [HTTP contract](#http-contract)
 - [Testing](#testing)
 - [Benchmarks](#benchmarks)
-- [Limitations](#limitations)
+- [Limitations and roadmap](#limitations-and-roadmap)
 - [Tech stack](#tech-stack)
+- [License](#license)
 
 ---
 
@@ -51,12 +72,12 @@ curl -i -H 'X-User-ID: alice' http://localhost:8080/api/hello
 | **Spoof-resistant keys** | `X-Forwarded-For` is ignored unless you declare how many proxies you run, then read from the right. |
 | **Fail-fast config** | Every enum parsed, every range checked, unknown keys rejected, all errors reported at once. `-check` validates without starting. |
 | **Observability** | Prometheus metrics with denial reasons, lease effectiveness, breaker state and controller internals; provisioned Grafana dashboard. |
-| **Graceful shutdown** | SIGTERM drains in flight requests, then background work stops and Redis is closed. |
+| **Graceful shutdown** | SIGTERM drains in-flight requests, then background work stops and Redis is closed. |
 | **Tests** | Unit and integration, including the Lua scripts against both miniredis and a real Redis in CI. |
 
 ---
 
-## How it fits together
+## Architecture
 
 The limiter is a chain of decorators, each implementing the same `Limiter`
 interface. The order is load-bearing.
@@ -126,9 +147,12 @@ grafana/, prometheus.yml        provisioned dashboard and scrape config
 
 ---
 
-## Running it
+## Running the service
 
-### With Docker (everything)
+Prerequisites and platform-specific install steps are in [`SETUP.md`](SETUP.md).
+The test suite needs nothing but Go.
+
+### With Docker (full stack)
 
 ```bash
 make docker-up        # app, Redis, Prometheus, Grafana, Redis exporter
@@ -152,7 +176,7 @@ make test       # full suite; no Redis required
 make test-race
 ```
 
-### Trying the features
+### Exercising the features
 
 ```bash
 # Basic limit — watch the headers count down
@@ -215,7 +239,7 @@ routes[0] "/api/export": cost 200 exceeds the per-window capacity 100, so every 
 
 ---
 
-## The two algorithms
+## Algorithms
 
 | | Sliding window counter | Token bucket |
 |---|---|---|
@@ -324,7 +348,7 @@ Client cancellations and impossible-cost errors are excluded from the breaker: t
 first would trip it during a client-side timeout storm, and the second would let one
 misbehaving caller degrade the limiter for everyone.
 
-### Bounded everything
+### Bounded memory everywhere
 
 An unbounded key map is a denial-of-service vector — IP-keyed traffic from a large
 botnet grows it until the process is OOM-killed. Every in-memory map is sharded 256
@@ -435,6 +459,20 @@ make cover       # docs/coverage.html
 make bench
 ```
 
+131 tests and 8 benchmarks. Statement coverage on the packages that carry logic:
+
+| Package | Coverage |
+|---|---|
+| `internal/shardmap` | 95.6% |
+| `internal/fallback` | 92.4% |
+| `internal/limiter` | 87.2% |
+| `internal/config` | 86.1% |
+| `internal/middleware` | 86.1% |
+| `internal/penalty` | 86.0% |
+
+`cmd/server` (63.1%) is wiring and `internal/metrics` is registration only; both are
+exercised end-to-end by the Docker job in CI rather than by unit tests.
+
 The Redis paths are covered without a running Redis: tests use `miniredis`, whose Lua
 host executes the real scripts. Because it is a reimplementation, CI *also* runs the
 same scripts against a real Redis so the two cannot quietly diverge on
@@ -492,7 +530,9 @@ across all 256. Everything on the hot path is allocation-free.
 
 ---
 
-## Limitations
+## Limitations and roadmap
+
+Known limits, stated rather than hidden:
 
 - **Single Redis.** No Cluster support wired up, so Redis is a single point of
   failure. The code is Cluster-*ready* — keys are hash-tagged and the limiters accept
@@ -508,9 +548,9 @@ across all 256. Everything on the hot path is allocation-free.
   numbers depend so heavily on hardware, Redis placement and network that quoting mine
   would be misleading. Run `make k6-steady` and read them off.
 
-Worth doing next, roughly in order of value: Redis Cluster with a real sharding
-story; per-tenant adaptive limits so one noisy tenant cannot trigger global shedding;
-a gRPC interceptor over the same `Limiter` interface.
+Next, roughly in order of value: Redis Cluster with a real sharding story; per-tenant
+adaptive limits so one noisy tenant cannot trigger global shedding; a gRPC interceptor
+over the same `Limiter` interface.
 
 ---
 
@@ -524,3 +564,9 @@ a gRPC interceptor over the same `Limiter` interface.
 - **Prometheus + Grafana** — pull-based collectors, provisioned dashboard.
 - **k6** — `constant-arrival-rate` executor for load tests that mean something.
 - **miniredis** — real Lua execution in unit tests, with real Redis in CI behind it.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
