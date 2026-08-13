@@ -1,0 +1,1346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate Limiter — Codebase Guide</title>
+<style>
+:root{
+  --bg:#fbfbfa; --panel:#fff; --ink:#1b1a17; --muted:#6b6862; --line:#e6e3dd;
+  --accent:#b4531f; --accent-soft:#fdf1e8; --ok:#2f6d4f; --ok-soft:#eef6f1;
+  --warn:#8a6510; --warn-soft:#fdf6e6; --bad:#a3322b; --bad-soft:#fdeeec;
+  --code-bg:#f5f3ef; --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.04);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#15161a; --panel:#1c1e23; --ink:#e8e6e1; --muted:#9a968e; --line:#2c2f36;
+    --accent:#e08c52; --accent-soft:#2a1f17; --ok:#7bc39b; --ok-soft:#17251d;
+    --warn:#d9ac52; --warn-soft:#262016; --bad:#e9847c; --bad-soft:#2a1a18;
+    --code-bg:#14161a; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme=light]{
+  --bg:#fbfbfa; --panel:#fff; --ink:#1b1a17; --muted:#6b6862; --line:#e6e3dd;
+  --accent:#b4531f; --accent-soft:#fdf1e8; --ok:#2f6d4f; --ok-soft:#eef6f1;
+  --warn:#8a6510; --warn-soft:#fdf6e6; --bad:#a3322b; --bad-soft:#fdeeec;
+  --code-bg:#f5f3ef; --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.04);
+}
+:root[data-theme=dark]{
+  --bg:#15161a; --panel:#1c1e23; --ink:#e8e6e1; --muted:#9a968e; --line:#2c2f36;
+  --accent:#e08c52; --accent-soft:#2a1f17; --ok:#7bc39b; --ok-soft:#17251d;
+  --warn:#d9ac52; --warn-soft:#262016; --bad:#e9847c; --bad-soft:#2a1a18;
+  --code-bg:#14161a; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:var(--accent)}
+code,kbd{font-family:var(--mono);font-size:.88em}
+:not(pre)>code{background:var(--code-bg);padding:.12em .38em;border-radius:4px;
+  border:1px solid var(--line);white-space:nowrap}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.6;margin:14px 0}
+pre .c{color:var(--muted)}
+pre .k{color:var(--accent)}
+pre .s{color:var(--ok)}
+
+/* layout */
+.wrap{display:grid;grid-template-columns:264px minmax(0,1fr);gap:0;max-width:1500px;margin:0 auto}
+aside{position:sticky;top:0;height:100vh;overflow-y:auto;border-right:1px solid var(--line);
+  padding:22px 16px 40px;background:var(--bg)}
+main{padding:34px 40px 120px;min-width:0}
+@media(max-width:960px){
+  .wrap{grid-template-columns:1fr}
+  aside{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+  main{padding:24px 18px 80px}
+}
+
+/* sidebar */
+.brand{font-weight:650;letter-spacing:-.01em;margin:0 0 2px;font-size:15px}
+.brand small{display:block;color:var(--muted);font-weight:400;font-size:12px;letter-spacing:0}
+nav{margin-top:18px}
+nav a{display:block;padding:6px 10px;border-radius:7px;color:var(--ink);text-decoration:none;
+  font-size:13.5px;border-left:2px solid transparent}
+nav a:hover{background:var(--accent-soft)}
+nav a.on{background:var(--accent-soft);border-left-color:var(--accent);color:var(--accent);font-weight:550}
+nav .grp{margin:16px 0 5px;font-size:11px;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--muted);padding-left:10px}
+.tog{margin-top:20px;width:100%;padding:7px;border:1px solid var(--line);background:var(--panel);
+  color:var(--muted);border-radius:7px;cursor:pointer;font:inherit;font-size:12.5px}
+.tog:hover{border-color:var(--accent);color:var(--accent)}
+
+/* typography */
+h1{font-size:31px;letter-spacing:-.022em;margin:0 0 6px;line-height:1.2}
+h2{font-size:23px;letter-spacing:-.018em;margin:52px 0 4px;padding-top:14px;line-height:1.25}
+h3{font-size:16.5px;margin:28px 0 6px;letter-spacing:-.008em}
+h4{font-size:14px;margin:20px 0 4px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.lede{color:var(--muted);font-size:17px;margin:0 0 4px}
+section{scroll-margin-top:20px}
+p{margin:11px 0}
+ul,ol{margin:11px 0;padding-left:22px}
+li{margin:5px 0}
+hr{border:0;border-top:1px solid var(--line);margin:44px 0 0}
+
+/* cards */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  margin:14px 0;box-shadow:var(--shadow)}
+.card h3,.card h4{margin-top:0}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(215px,1fr))}
+
+.tag{display:inline-block;font-size:11px;font-family:var(--mono);padding:2px 7px;border-radius:20px;
+  border:1px solid var(--line);color:var(--muted);background:var(--code-bg);white-space:nowrap}
+.tag.a{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.tag.o{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+.tag.w{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.tag.b{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:11px 15px;
+  border-radius:0 9px 9px 0;margin:14px 0}
+.note.bad{border-color:var(--bad);background:var(--bad-soft)}
+.note.ok{border-color:var(--ok);background:var(--ok-soft)}
+.note.warn{border-color:var(--warn);background:var(--warn-soft)}
+.note p:first-child{margin-top:0}.note p:last-child{margin-bottom:0}
+.why{font-size:14.5px}
+.why b{color:var(--accent)}
+
+/* tables */
+.tw{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:14px;background:var(--panel)}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+  background:var(--code-bg);font-weight:600;position:sticky;top:0}
+tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+
+/* chain diagram */
+.chain{display:flex;flex-direction:column;gap:7px;margin:16px 0}
+.lyr{display:grid;grid-template-columns:30px 1fr;gap:12px;align-items:stretch;
+  border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;
+  cursor:pointer;transition:border-color .12s,transform .12s}
+.lyr:hover{border-color:var(--accent);transform:translateX(2px)}
+.lyr.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.lyr .n{background:var(--code-bg);display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:12px;color:var(--muted);border-right:1px solid var(--line)}
+.lyr .bd{padding:11px 14px 12px}
+.lyr .t{font-weight:600;font-size:14.5px}
+.lyr .t code{font-weight:400}
+.lyr .d{color:var(--muted);font-size:13.5px;margin-top:2px}
+.lyr .x{display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);font-size:14px}
+.lyr.sel .x{display:block}
+.arrow{text-align:center;color:var(--muted);font-size:12px;line-height:1;margin:-2px 0}
+
+/* tracer */
+.pills{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0}
+.pill{padding:6px 12px;border:1px solid var(--line);background:var(--panel);border-radius:20px;
+  cursor:pointer;font:inherit;font-size:13px;color:var(--ink);white-space:nowrap}
+.pill:hover{border-color:var(--accent)}
+.pill.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.steps{counter-reset:s}
+.step{position:relative;padding:0 0 0 40px;margin:0}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:2px;width:26px;height:26px;
+  border-radius:50%;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-family:var(--mono);font-weight:600}
+.step:after{content:"";position:absolute;left:13px;top:30px;bottom:-6px;width:1px;background:var(--line)}
+.step:last-child:after{display:none}
+.step .sh{font-weight:600;font-size:14.5px}
+.step .sm{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:1px 0 5px}
+.step .sw{font-size:14px}
+.step .sy{font-size:13.5px;color:var(--muted);margin-top:3px}
+.step .sy b{color:var(--accent);font-weight:600}
+.step>div{padding-bottom:20px}
+.outcome{margin-top:6px;padding:12px 15px;border-radius:10px;font-family:var(--mono);font-size:13px}
+.outcome.ok{background:var(--ok-soft);border:1px solid var(--ok);color:var(--ok)}
+.outcome.bad{background:var(--bad-soft);border:1px solid var(--bad);color:var(--bad)}
+.outcome.warn{background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn)}
+
+/* search + reference */
+.search{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:10px;font:inherit;
+  background:var(--panel);color:var(--ink);margin:12px 0}
+.search:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+.hint{color:var(--muted);font-size:13px}
+.fitem{border:1px solid var(--line);border-radius:10px;background:var(--panel);margin:9px 0;overflow:hidden}
+.fh{padding:11px 15px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.fh:hover{background:var(--accent-soft)}
+.fh .p{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--accent)}
+.fh .l{margin-left:auto;font-size:11px;color:var(--muted);font-family:var(--mono)}
+.fh .s{color:var(--muted);font-size:13.5px;flex-basis:100%}
+.fb{display:none;padding:0 15px 14px;border-top:1px solid var(--line);padding-top:12px}
+.fitem.open .fb{display:block}
+.fns{margin-top:10px}
+.fn{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:4px 14px;padding:7px 0;
+  border-top:1px dotted var(--line);font-size:13.5px}
+.fn:first-child{border-top:0}
+.fn .fnn{font-family:var(--mono);font-size:12.5px;color:var(--accent);word-break:break-word}
+@media(max-width:640px){.fn{grid-template-columns:1fr}}
+
+/* quiz */
+.q{border:1px solid var(--line);border-radius:10px;background:var(--panel);margin:9px 0}
+.qh{padding:12px 15px;cursor:pointer;font-weight:550;font-size:14.5px;display:flex;gap:10px}
+.qh:hover{background:var(--accent-soft)}
+.qh .m{color:var(--accent);font-family:var(--mono);font-size:12px;flex-shrink:0;margin-top:2px}
+.qa{display:none;padding:0 15px 14px 40px;font-size:14px;color:var(--ink);
+  border-top:1px solid var(--line);padding-top:12px;margin-top:0}
+.q.open .qa{display:block}
+.kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;
+  padding:1px 5px;border-radius:4px;background:var(--code-bg)}
+.toc-top{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0}
+.toc-top a{font-size:13px;padding:5px 11px;border:1px solid var(--line);border-radius:20px;
+  text-decoration:none;background:var(--panel)}
+.toc-top a:hover{border-color:var(--accent)}
+.mini{font-size:13px;color:var(--muted)}
+.eq{font-family:var(--mono);background:var(--code-bg);border:1px solid var(--line);
+  padding:10px 14px;border-radius:8px;display:inline-block;margin:8px 0;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<aside>
+  <p class="brand">Rate Limiter<small>codebase guide · 8,000 lines of Go</small></p>
+  <nav id="nav">
+    <div class="grp">Understand it</div>
+    <a href="#start">1 · Start here</a>
+    <a href="#trace">2 · Trace a request</a>
+    <a href="#chain">3 · The chain</a>
+    <div class="grp">How each part works</div>
+    <a href="#algos">4 · The two algorithms</a>
+    <a href="#redis">5 · Redis &amp; Lua</a>
+    <a href="#lease">6 · Quota leasing</a>
+    <a href="#resilience">7 · Staying up</a>
+    <a href="#http">8 · The HTTP layer</a>
+    <a href="#config">9 · Config</a>
+    <a href="#metrics">10 · Observability</a>
+    <div class="grp">Reference</div>
+    <a href="#map">11 · Every file</a>
+    <a href="#bugs">12 · Bugs &amp; lessons</a>
+    <a href="#quiz">13 · Test yourself</a>
+  </nav>
+  <button class="tog" id="tog">◐ Toggle theme</button>
+</aside>
+
+<main>
+<h1>How this rate limiter works</h1>
+<p class="lede">A guided tour of the codebase — the request path end to end, what every file
+does, and the reasoning behind each decision. Written so that by the end you can answer
+“what is this for and why is it like that?” about any part of the repo.</p>
+
+<div class="toc-top">
+  <a href="#trace">▶ Trace a request</a>
+  <a href="#chain">The chain</a>
+  <a href="#lease">The clever bit</a>
+  <a href="#map">File reference</a>
+  <a href="#quiz">Quiz yourself</a>
+</div>
+
+<!-- ══════════════ 1 ══════════════ -->
+<section id="start">
+<h2>1 · Start here</h2>
+
+<p>You already know a rate limiter decides <em>“has this caller had too many requests?”</em>.
+Everything in this repo exists to answer that question correctly when there is more than one
+server, when the database holding the counts is slow or down, and when the caller is actively
+trying to get more than its share.</p>
+
+<h3>The one idea that organises the whole codebase</h3>
+<p>There is exactly one interface. Everything implements it:</p>
+<pre><span class="k">type</span> Limiter <span class="k">interface</span> {
+    Allow(ctx, key)        (Result, error)  <span class="c">// shorthand for AllowN(…, 1)</span>
+    AllowN(ctx, key, n)    (Result, error)  <span class="c">// consume n units of quota</span>
+    Name()                 <span class="k">string</span>           <span class="c">// metrics label</span>
+}</pre>
+<p>Two things are <em>real</em> limiters that count requests. Everything else is a
+<b>decorator</b>: it takes a <code>Limiter</code>, adds one behaviour, and is itself a
+<code>Limiter</code>. That is why they stack in any order, and why each file stays small
+enough to reason about alone.</p>
+
+<div class="grid g2">
+  <div class="card">
+    <h4>The 2 real algorithms</h4>
+    <p><span class="tag a">sliding_window_counter</span> <span class="tag a">token_bucket</span></p>
+    <p class="mini">Each has an in-memory version (single process) and a Redis version
+    (shared across servers). They count, and they decide.</p>
+  </div>
+  <div class="card">
+    <h4>The 5 decorators</h4>
+    <p><span class="tag">chained</span> <span class="tag">adaptive</span>
+       <span class="tag">fallback</span> <span class="tag">lease</span>
+       <span class="tag">penalty</span></p>
+    <p class="mini">Tiers, load shedding, outage handling, round-trip reduction, abuse
+    escalation. None of them counts requests themselves.</p>
+  </div>
+</div>
+
+<div class="note">
+<p class="why"><b>Why a decorator chain instead of one big function?</b> Each concern can be
+switched off in config without touching the others, and each can be tested against a fake
+<code>Limiter</code> in isolation. The whole test suite for load shedding never touches Redis.
+The cost is that you must read <code>main.go</code> to know the assembled order — which is why
+section 3 exists.</p>
+</div>
+
+<h3>The 30-second mental model</h3>
+<ol>
+  <li>An HTTP request arrives. The middleware turns it into a <b>key</b> (who is this?) and a
+      <b>cost</b> (how much quota does this endpoint charge?).</li>
+  <li>That <code>(key, cost)</code> goes into the top of the chain.</li>
+  <li>Each layer either answers immediately, or passes it down.</li>
+  <li>At the bottom, a Lua script in Redis atomically checks and updates the count.</li>
+  <li>A <code>Result</code> comes back up. The middleware turns it into a status code and headers.</li>
+</ol>
+</section>
+
+<!-- ══════════════ 2 ══════════════ -->
+<section id="trace">
+<h2>2 · Trace a request, input to output</h2>
+<p>Pick an outcome. Each step shows the file and function, what happens, and why it is done
+that way. This is the fastest route to understanding the whole system.</p>
+
+<div class="pills" id="scen"></div>
+<div id="trace-out"></div>
+</section>
+
+<!-- ══════════════ 3 ══════════════ -->
+<section id="chain">
+<h2>3 · The chain, and why the order matters</h2>
+<p>Click any layer to see why it sits where it does. The order is not arbitrary — three of
+these positions are load-bearing, and moving them silently breaks a feature.</p>
+<div class="chain" id="chain"></div>
+
+<div class="note warn">
+<p class="why"><b>The trap worth remembering.</b> If the adaptive limiter were placed
+<em>above</em> the lease cache, it would be timing lease hits — around a microsecond — instead
+of Redis round trips. Its average would never approach the “Redis is slow” watermark, so load
+shedding would never once engage. The code would look perfectly correct and the feature would
+be dead. This is the kind of bug that only shows up if you reason about what each layer
+<em>measures</em>, not just what it does.</p>
+</div>
+</section>
+
+<!-- ══════════════ 4 ══════════════ -->
+<section id="algos">
+<h2>4 · The two algorithms</h2>
+<p>These are the only components that actually count. Everything else defers to them.</p>
+
+<h3>Sliding window counter</h3>
+<p>Keeps two numbers per key: how many requests in the current fixed window, and how many in
+the previous one. It then <em>interpolates</em> between them:</p>
+<div class="eq">effective = round( prev_count × (1 − elapsed/window) ) + curr_count</div>
+<p>If you are 25% into the current window, 75% of the previous window still “counts”. As time
+moves, the old window's contribution smoothly decays.</p>
+
+<div class="note">
+<p class="why"><b>Why not just a fixed window?</b> A plain fixed window resets to zero on a
+boundary. A caller can spend its entire quota in the last instant of one window and its entire
+quota again in the first instant of the next — <b>2× the limit in a millisecond</b>. The
+interpolation removes that cliff while still costing only two integers per key.</p>
+</div>
+
+<div class="note ok">
+<p class="why"><b>Why <code>round</code> and not <code>floor</code>?</b> Truncating always
+throws away a fraction of the carried-over count, so the effective total is always slightly
+<em>under</em> the truth, so the limiter admits slightly <em>more</em> than the limit — every
+window, in the same direction. Rounding makes the error symmetric and self-cancelling. This is
+a one-character difference with a real bias behind it.</p>
+</div>
+
+<h3>Token bucket</h3>
+<p>A bucket holds tokens up to <code>burst_max</code>. Tokens refill continuously at
+<code>limit/window</code> per second. A request takes <code>cost</code> tokens, or is refused.</p>
+<pre><span class="c">// refill is computed lazily from elapsed time, never by a background ticker</span>
+tokens = min(burst_max, tokens + elapsed_ms × refill_per_ms)</pre>
+
+<div class="note">
+<p class="why"><b>Why lazy refill?</b> A ticker per key would mean a goroutine (or a timer) per
+key — millions of them. Computing <code>now − last_seen</code> on access gives the identical
+answer for zero ongoing cost, and idle keys cost literally nothing.</p>
+</div>
+
+<div class="tw"><table>
+<thead><tr><th></th><th>Sliding window counter</th><th>Token bucket</th></tr></thead>
+<tbody>
+<tr><td><b>Shape of enforcement</b></td><td>Smooth; no bursts</td><td>Bursty by design, up to <code>burst_max</code></td></tr>
+<tr><td><b>State per key</b></td><td>2 counters + window start</td><td>tokens + timestamp</td></tr>
+<tr><td><b>A caller idle for an hour</b></td><td>Gets the normal rate</td><td>Gets a full burst immediately</td></tr>
+<tr><td><b>Pick it when</b></td><td>Protecting a fragile backend</td><td>Public API where bursts are a feature</td></tr>
+<tr><td><b>Used by</b></td><td>Cloudflare</td><td>AWS, Stripe</td></tr>
+</tbody></table></div>
+
+<div class="note ok">
+<p class="why"><b>The detail that makes the fallback work.</b> Both algorithms align their
+windows to the same absolute epoch boundaries — in memory <em>and</em> in Redis. So when Redis
+dies and a node starts enforcing locally, the key keeps the same window boundaries it already
+had. The fallback is a <em>continuation</em> of the distributed limiter rather than a reset of
+it. If the in-memory version started its window at “now”, every key would get a fresh quota the
+instant Redis blinked.</p>
+</div>
+</section>
+
+<!-- ══════════════ 5 ══════════════ -->
+<section id="redis">
+<h2>5 · Redis and the Lua scripts</h2>
+<p>Three Lua scripts do the real work. Each runs <em>atomically</em> — Redis is
+single-threaded, so while a script runs, nothing else can interleave.</p>
+
+<div class="tw"><table>
+<thead><tr><th>Script</th><th>Lines</th><th>Job</th></tr></thead>
+<tbody>
+<tr><td><code>limiter/sliding_window.lua</code></td><td>87</td><td>Read both windows, interpolate, decide, increment, set expiry</td></tr>
+<tr><td><code>limiter/token_bucket.lua</code></td><td>66</td><td>Read bucket, refill by elapsed time, decide, consume, write back</td></tr>
+<tr><td><code>penalty/penalty.lua</code></td><td>50</td><td>Bump the offence count, compute the escalating penalty, store it</td></tr>
+</tbody></table></div>
+
+<h3>Why it must be one atomic step</h3>
+<p>Two separate commands create two separate races:</p>
+<div class="grid g2">
+<div class="card">
+<h4 style="color:var(--bad)">Race 1 — check then increment</h4>
+<pre><span class="c">-- node A</span> GET count  <span class="c">→ 99</span>
+<span class="c">-- node B</span> GET count  <span class="c">→ 99</span>
+<span class="c">-- both think there is room</span>
+<span class="c">-- node A</span> INCR       <span class="c">→ 100</span>
+<span class="c">-- node B</span> INCR       <span class="c">→ 101  ✗</span></pre>
+<p class="mini">Both nodes see “one slot left” and both take it. The limit is exceeded.</p>
+</div>
+<div class="card">
+<h4 style="color:var(--bad)">Race 2 — increment then expire</h4>
+<pre><span class="c">-- node A</span> INCR    <span class="c">→ 1</span>
+<span class="c">-- node B</span> INCR    <span class="c">→ 2</span>
+<span class="c">-- node A</span> EXPIRE  <span class="c">→ TTL set</span>
+<span class="c">-- node B</span> EXPIRE  <span class="c">→ TTL reset ✗</span></pre>
+<p class="mini">The window silently extends every time a second node writes.</p>
+</div>
+</div>
+
+<div class="note ok">
+<p class="why"><b>How the expiry is handled here, and why it changed.</b> A common trick is to
+set the TTL only on the first write (<code>if new_count == cost</code>), saving one command. This
+repo instead calls <code>PEXPIRE</code> <em>unconditionally</em>, with a deadline computed from
+the window start: <code>win + 2×window − now</code>. Because that is a fixed <em>absolute</em>
+deadline, recomputing it is harmless — the TTL shortens as time passes rather than being pushed
+out. The clever version leaks the key forever if that single <code>PEXPIRE</code> is ever lost,
+which happens whenever the key was created by anything other than this script. One extra O(1)
+command buys away a whole class of slow memory leak.</p>
+</div>
+
+<h3>Whose clock decides?</h3>
+<p>The scripts call <code>redis.call('TIME')</code> instead of taking the time from the
+application server.</p>
+<div class="note">
+<p class="why"><b>Why.</b> If each node sent its own clock, two nodes whose clocks differ by
+200ms would disagree about which window a request belongs to — so the same request could be
+counted in different windows depending on which server received it. Redis is the one thing all
+nodes already share, so making it the clock makes boundaries globally consistent. The cost is
+that the script becomes non-deterministic, which is fine on <b>Redis 5+</b> where replicas
+receive the resulting writes rather than the script itself. That version requirement is a real
+constraint the code documents.</p>
+</div>
+
+<h3>Key layout</h3>
+<pre>rl:{user:alice}:1716000060   <span class="c">← sliding window, current window bucket</span>
+rl:{user:alice}:1716000059   <span class="c">← previous window</span>
+tb:{user:alice}              <span class="c">← token bucket hash (tokens + timestamp)</span>
+pen:{user:alice}:p           <span class="c">← active penalty (TTL = remaining time)</span>
+pen:{user:alice}:n           <span class="c">← offence count, for escalation</span></pre>
+<div class="note">
+<p class="why"><b>Why the curly braces?</b> That is a Redis Cluster <em>hash tag</em>. Cluster
+shards by key, but only hashes the part inside <code>{…}</code>. Since the scripts derive extra
+keys themselves (the two window buckets), the tag guarantees every derived key lands on the
+same shard — otherwise a clustered Redis would reject the script for touching multiple slots.
+The project does not ship a cluster client, but the keys are already shaped for one.</p>
+</div>
+</section>
+
+<!-- ══════════════ 6 ══════════════ -->
+<section id="lease">
+<h2>6 · Quota leasing — the most interesting part</h2>
+<p>If you only deeply understand one thing in this repo, make it this. It is the part that is
+easy to get wrong in a way that looks fine.</p>
+
+<h3>The obvious idea, and why it is broken</h3>
+<p>Hitting Redis on every request is expensive. The obvious fix: cache the <em>decision</em>
+for a few milliseconds. Here is what that actually does, with a 5ms cache and one key
+receiving 1000 requests/second:</p>
+<pre>every 5ms window:  5 requests arrive
+                   1 reaches Redis and is counted
+                   4 are served from cache, counted <span class="k">nowhere</span>
+
+over one second:   200 counted, 800 invisible
+configured limit:  100/s
+actually admitted: <span class="k">1000/s</span></pre>
+<div class="note bad">
+<p class="why"><b>Why this is the worst possible failure.</b> The error grows with per-key
+request rate — so the limiter becomes <em>least</em> accurate exactly when a caller is hammering
+it hardest, which is the only situation it exists for. And nothing looks wrong: no errors, no
+logs, plenty of 429s being returned to make it seem like it is working.</p>
+</div>
+
+<h3>The fix: lease quota instead of caching decisions</h3>
+<p>On a miss, ask Redis for the current request <em>plus a few extra units</em>. Those extras
+are already counted centrally, so they can be handed out locally with no loss of accuracy.</p>
+<pre>request 1  → ask Redis for 1 + 4 = 5 units   <span class="c">Redis count += 5</span>
+             use 1, keep 4 in local memory
+request 2  → take 1 from the local lease      <span class="c">no Redis call</span>
+request 3  → take 1 from the local lease      <span class="c">no Redis call</span>
+request 4  → take 1 from the local lease      <span class="c">no Redis call</span>
+request 5  → take 1 from the local lease      <span class="c">no Redis call</span>
+request 6  → lease empty, ask Redis again</pre>
+<p>Five requests, one round trip, and Redis's count is <em>exactly</em> 5. The limit can never
+be exceeded, because nothing is ever handed out that was not counted first.</p>
+
+<div class="grid g3">
+  <div class="card"><h4>Direction of error</h4>
+    <p><span class="tag o">under-admits</span></p>
+    <p class="mini">If a key goes quiet with 3 unused units, those are lost. Fewer requests
+    allowed than permitted — the safe direction.</p></div>
+  <div class="card"><h4>Round trips saved</h4>
+    <p><span class="tag a">~prefetch/(prefetch+1)</span></p>
+    <p class="mini">With <code>prefetch: 4</code>, about four in five requests to a hot key
+    never touch Redis.</p></div>
+  <div class="card"><h4>Measured</h4>
+    <p><span class="tag a">45.7 ns vs 88 µs</span></p>
+    <p class="mini">A lease hit is ~1,900× cheaper than a round trip, and allocation-free.</p></div>
+</div>
+
+<h3>Three refinements, each fixing a real measured problem</h3>
+<div class="card">
+<h4>a · Accumulate, never replace</h4>
+<p>When several requests miss at once, each draws its own batch. If storing a new lease
+<em>overwrote</em> the old one, the leftover units of the old lease would be discarded — quota
+already consumed in Redis, thrown in the bin. Measured effect: the limiter admitted 108 against
+a limit of 100 in one direction and stranded 85 units in the other. Now batches add together.</p>
+</div>
+<div class="card">
+<h4>b · Warm up before batching</h4>
+<p>A key's <em>first</em> miss claims no extra units. Why: in a simultaneous burst on a brand
+new key, every concurrent request misses before any lease exists, so each grabs a full batch and
+the burst ends before anyone spends them. Measured: <b>15</b> admitted out of a limit of 100.
+With warm-up: <b>76–100</b>.</p>
+</div>
+<div class="card">
+<h4>c · Shrink the batch near the limit</h4>
+<p>The prefetch is capped by the headroom Redis last reported. Close to the limit a big batch
+cannot be spent before the window turns, so it would strand quota. With this, sustained traffic
+lands on <b>exactly</b> the limit — verified at prefetch 1, 4, 8 and 16.</p>
+</div>
+
+<h3>The other half: negative caching</h3>
+<p>Once a caller is over quota, its denial is cached locally — capped at its own
+<code>Retry-After</code> so it is never held past the moment quota would have returned. This is
+what makes abuse <em>cheap to refuse</em>: an attacker sending 10,000 requests/second costs
+almost no Redis traffic at all.</p>
+</section>
+
+<!-- ══════════════ 7 ══════════════ -->
+<section id="resilience">
+<h2>7 · Staying up when things go wrong</h2>
+
+<h3>Three failure strategies</h3>
+<div class="tw"><table>
+<thead><tr><th>Strategy</th><th>Redis is down, so…</th><th>Choose when</th></tr></thead>
+<tbody>
+<tr><td><code>fail_open</code></td><td>admit everything (200)</td><td>Refusing real traffic costs more than briefly over-serving — search, feeds, content</td></tr>
+<tr><td><code>fail_closed</code></td><td>refuse everything (503)</td><td>An unmetered request is dangerous — payments, auth, anything that spends money</td></tr>
+<tr><td><code>local_fallback</code></td><td>each node enforces from its own memory</td><td>Middle ground; N nodes admit roughly N× the limit</td></tr>
+</tbody></table></div>
+
+<div class="note bad">
+<p class="why"><b>The single worst bug this project had.</b> The middleware used to call
+<code>next.ServeHTTP(w, r)</code> on <em>any</em> limiter error. So during a Redis outage every
+request was admitted — regardless of the configured strategy. <code>fail_closed</code> silently
+became <code>fail_open</code>, on precisely the services that chose it <em>because</em> unmetered
+requests are dangerous. The fix is structural, not a patched condition: a handled failure now
+returns a decision with a <code>nil</code> error, so there is no way for a caller to check only
+the error and let the request through.</p>
+</div>
+
+<h3>The circuit breaker</h3>
+<p>After a few consecutive failures, Redis is skipped entirely until a cooldown passes, when
+exactly one probe is let through to test recovery.</p>
+<div class="note">
+<p class="why"><b>Why this is not optional.</b> Without it, every request during an outage waits
+out the full Redis timeout <em>before</em> falling back. So a dependency you have explicitly
+decided to survive without instead adds its timeout to every single response. The breaker turns
+a latency catastrophe into a fast local decision. Two things are deliberately excluded from
+tripping it: client cancellations (a client-side timeout storm would degrade everyone else) and
+impossible-cost errors (one bad caller must not break the limiter for all).</p>
+</div>
+
+<h3>Adaptive load shedding</h3>
+<p>Watches how long the limiter takes and drops a fraction of traffic when Redis slows down —
+the same AIMD control law as TCP congestion control: <b>back off sharply, recover gently</b>.</p>
+<div class="eq">latency &gt; high watermark → multiplier ×= 0.75   &nbsp;|&nbsp;   latency &lt; low watermark → multiplier += 0.05</div>
+<div class="note">
+<p class="why"><b>The subtle fix here.</b> The multiplier used to be stepped once <em>per
+request</em>. That ties the control loop's speed to traffic volume: at 100k requests/second it
+slams to the floor within a millisecond, and a nearly idle service never recovers at all because
+recovery needs one request per step. Now it steps at most once per fixed interval, so decay and
+recovery are measured in <em>time</em> — which is what makes it a controller rather than a
+counter.</p>
+</div>
+
+<h3>The penalty box</h3>
+<p>A caller that keeps hammering after being refused is not deterred by more 429s, and costs a
+round trip either way. After N denials in a window, the key is blocked outright — doubling on
+each further offence, up to a cap.</p>
+<div class="note ok">
+<p class="why"><b>The fairness rule.</b> Only denials the <em>caller</em> is responsible for
+count as strikes. Load shedding and limiter outages are the service's own condition — counting
+those would march well-behaved callers into the penalty box during an overload and keep them
+locked out for minutes after it passed. That is the exact opposite of what shedding is for.
+See <code>limiter.CallerAttributable</code>.</p>
+</div>
+<div class="note warn">
+<p class="why"><b>An honest trade-off.</b> Strikes are counted <em>per node</em>, and Redis is
+only written when the threshold trips. That keeps abuse cheap to shed, but it means an offender
+spread evenly across N nodes needs up to N×threshold denials to trip. Once tripped, the penalty
+is shared globally. Knowing where a design is approximate — and why that was chosen — is more
+valuable than pretending it is exact.</p>
+</div>
+</section>
+
+<!-- ══════════════ 8 ══════════════ -->
+<section id="http">
+<h2>8 · The HTTP layer</h2>
+
+<h3>Turning a request into a key</h3>
+<pre>key_type: ip      → ip:203.0.113.9
+key_type: user    → user:alice                    <span class="c">(falls back to ip if no header)</span>
+key_type: tenant  → tenant:acme|user:alice</pre>
+
+<div class="note bad">
+<p class="why"><b>Why <code>X-Forwarded-For</code> is ignored by default.</b> Anyone can send
+that header. If the limiter trusts it, a caller gets a brand new rate limit key — and therefore
+a fresh quota — just by changing it on every request. Complete bypass, no tooling required. So
+trusting it is opt-in via <code>trusted_proxy_hops</code>, and the address is read by counting
+from the <em>right</em>: each proxy appends the address it saw, so the rightmost entries are the
+ones written by your own infrastructure and cannot be forged. Reading the leftmost entry — the
+common shortcut — reads whatever the client typed.</p>
+</div>
+
+<div class="note">
+<p class="why"><b>Why key components are length-bounded and hashed.</b> These values become Redis
+key names. Unbounded, a caller sends a megabyte-long <code>X-User-ID</code> — under thousands of
+distinct values — and exhausts Redis memory rather than merely burning quota. Note it hashes
+rather than <em>truncates</em>: truncation would merge everyone sharing a prefix into one quota,
+which is simultaneously a bypass and a denial of service. And each component is bounded
+<em>separately</em> so the <code>tenant:…|user:…</code> structure survives — hashing the whole
+key would erase the tenant, and the chain's per-tenant tier would collapse every big-header
+caller into one shared bucket.</p>
+</div>
+
+<h3>What comes back out</h3>
+<div class="tw"><table>
+<thead><tr><th>Status</th><th>Means</th><th>Why not something else</th></tr></thead>
+<tbody>
+<tr><td><span class="tag o">200</span></td><td>Admitted</td><td>—</td></tr>
+<tr><td><span class="tag w">400</span></td><td>Declared cost can never fit the limit</td><td>429 would put the client in a retry loop that can <em>never</em> succeed</td></tr>
+<tr><td><span class="tag b">429</span></td><td>Over quota, penalised, or shed</td><td>The normal throttle</td></tr>
+<tr><td><span class="tag b">503</span></td><td><code>fail_closed</code> and the limiter is down</td><td>The caller did nothing wrong and its quota is intact — this is a server-side outage</td></tr>
+</tbody></table></div>
+
+<div class="tw"><table>
+<thead><tr><th>Header</th><th>When</th></tr></thead>
+<tbody>
+<tr><td><code>X-RateLimit-Limit / -Remaining / -Reset</code></td><td>Whenever a real numeric limit applies</td></tr>
+<tr><td><code>Retry-After</code></td><td>Every refusal. Whole seconds, <b>rounded up</b>, minimum 1</td></tr>
+<tr><td><code>X-RateLimit-Denied-By</code></td><td>When a specific stage or tier refused it</td></tr>
+</tbody></table></div>
+
+<div class="note">
+<p class="why"><b>Two small decisions with reasons.</b> <code>Retry-After</code> rounds
+<em>up</em>: rounding down tells the client to retry before quota is actually available, which
+earns it another denial and — with the penalty box on — another strike. And the
+<code>X-RateLimit-*</code> headers are <em>omitted</em> during a fail-open degradation rather
+than guessed, because there is no counted quota behind that decision and a number the client
+may cache and act on would be a lie.</p>
+</div>
+
+<div class="note ok">
+<p class="why"><b>Why <code>/healthz</code> deliberately does not check Redis.</b> Liveness
+answers “is this process healthy?”. If it checked Redis, a Redis outage would make the
+orchestrator restart <em>every</em> node — during the exact incident the fallback strategy exists
+to ride out. <code>/readyz</code> does check Redis, because readiness answers a different
+question: “should traffic come here?”. Health and metrics endpoints are never rate limited, since
+they must answer precisely when everything else is being throttled.</p>
+</div>
+</section>
+
+<!-- ══════════════ 9 ══════════════ -->
+<section id="config">
+<h2>9 · Config, and why validation is so strict</h2>
+<div class="note bad">
+<p class="why"><b>The reason for all of it:</b> a misconfigured rate limiter still returns 200s.
+Nothing looks broken until the thing it was protecting falls over. So the config layer is
+deliberately hostile to mistakes.</p>
+</div>
+<ul>
+  <li><b>Unknown keys are a startup error.</b> A misspelled setting you believe you enabled
+      would otherwise silently not exist.</li>
+  <li><b>Every enum is parsed, never defaulted.</b> A typo in <code>fail_closed</code> must not
+      quietly become allow-everything.</li>
+  <li><b>Combinations are checked.</b> A route whose cost exceeds capacity could never be served;
+      a per-tenant tier with no tenant in the key would put every caller in one bucket.</li>
+  <li><b>All problems are reported at once</b>, so you do not fix one per restart.</li>
+</ul>
+<pre>$ ./bin/server -check
+invalid configuration:
+limiter.algorithm: unknown algorithm "fixed_window" (want "sliding_window_counter" or "token_bucket")
+limiter.chain.enabled requires limiter.key_type: "tenant", got "ip" — without a tenant in
+  the key every caller shares one tenant bucket
+routes[0] "/api/export": cost 200 exceeds the per-window capacity 100, so every request
+  to it would be rejected</pre>
+<p class="mini">Every value is also overridable by environment variable:
+<code>limiter.limit</code> → <code>RATELIMITER_LIMITER_LIMIT</code>. Environment values go
+through the identical validation.</p>
+</section>
+
+<!-- ══════════════ 10 ══════════════ -->
+<section id="metrics">
+<h2>10 · Observability</h2>
+<div class="tw"><table>
+<thead><tr><th>Metric</th><th>Watch it for</th></tr></thead>
+<tbody>
+<tr><td><code>ratelimiter_requests_allowed_total</code></td><td>Baseline traffic</td></tr>
+<tr><td><code>ratelimiter_requests_denied_total{denied_by}</code></td><td><b>The most useful one.</b> Splits refusals into <code>quota</code>, <code>penalty</code>, <code>adaptive_shed</code>, <code>limiter_unavailable</code>, <code>invalid_cost</code>, or a tier name</td></tr>
+<tr><td><code>ratelimiter_limiter_latency_seconds</code></td><td>p50 far below p99 means leasing is working</td></tr>
+<tr><td><code>ratelimiter_lease_hit_ratio</code></td><td>Round trips avoided; ceiling is ~prefetch/(prefetch+1)</td></tr>
+<tr><td><code>ratelimiter_adaptive_multiplier</code></td><td>Below 1.0 means it is shedding</td></tr>
+<tr><td><code>ratelimiter_breaker_open</code></td><td>1 means Redis is being bypassed entirely</td></tr>
+<tr><td><code>ratelimiter_degraded_total</code></td><td>Any sustained value = the configured limit is <em>not</em> being enforced</td></tr>
+<tr><td><code>ratelimiter_tracked_keys{component}</code></td><td>Approaching <code>max_keys</code> means eviction is thrashing</td></tr>
+<tr><td><code>ratelimiter_limiter_errors_total</code> · <code>_handler_panics_total</code></td><td>Should both sit at zero</td></tr>
+</tbody></table></div>
+<div class="note">
+<p class="why"><b>Two implementation choices worth knowing.</b> Label children are resolved once
+at startup, not per request — <code>WithLabelValues</code> hashes the label set on every call,
+which is pure waste when the labels never change. And anything derived from live state is a
+<code>CounterFunc</code>/<code>GaugeFunc</code>, computed at scrape time, so it cannot go stale
+or drift from its source and needs no background goroutine.</p>
+</div>
+</section>
+
+<!-- ══════════════ 11 ══════════════ -->
+<section id="map">
+<h2>11 · Every file, and what it is for</h2>
+<p>Type to filter by path, purpose, or function name. Click any file to see its functions.</p>
+<input class="search" id="q" type="search" placeholder="Try: lease, shardmap, penalised, boundComponent, breaker…" autocomplete="off">
+<p class="hint" id="qn"></p>
+<div id="files"></div>
+</section>
+
+<!-- ══════════════ 12 ══════════════ -->
+<section id="bugs">
+<h2>12 · The bugs, and what each one teaches</h2>
+<p>These were all real defects in this repo. They are the best interview material in the
+project, because each one is a lesson about a <em>category</em> of mistake rather than a typo.</p>
+<div id="bugs-out"></div>
+</section>
+
+<!-- ══════════════ 13 ══════════════ -->
+<section id="quiz">
+<h2>13 · Test yourself</h2>
+<p>If you can answer these without looking, you understand the codebase. Click to reveal.</p>
+<div id="quiz-out"></div>
+</section>
+
+<hr>
+<p class="mini" style="margin-top:22px">Generated for the <code>Ratelimiter</code> repo ·
+Go 1.22 · Redis 5+ · 131 tests · 85.8% coverage. Open the repo alongside this page: every
+section names the file it describes.</p>
+</main>
+</div>
+
+<script>
+/* ─────────────── data ─────────────── */
+
+const CHAIN = [
+  {n:"1", t:"middleware.RateLimiter", f:"internal/middleware/middleware.go",
+   d:"HTTP in, HTTP out. Derives the key and cost; maps the Result to a status code.",
+   x:"Outermost because it is the only layer that knows about HTTP. Everything below it deals in <code>(key, cost)</code> and knows nothing about requests, headers or status codes. That separation is why the limiter could be reused behind gRPC without touching any of it."},
+  {n:"2", t:"penalty.Box", f:"internal/penalty/penalty.go",
+   d:"Blocks keys that have been escalated for repeated abuse.",
+   x:"<b>Position matters:</b> outermost limiter stage, so a blocked caller is refused before it can consume a lease or a Redis round trip. Putting it lower would mean paying for the very traffic the box exists to make cheap."},
+  {n:"3", t:"limiter.LeaseCache", f:"internal/limiter/lease.go",
+   d:"Serves requests from locally-held quota that Redis already counted.",
+   x:"<b>Position matters:</b> above the fallback, so a local hit costs nothing at all — no breaker check, no Redis, no adaptive bookkeeping. This is the layer that makes the whole system fast."},
+  {n:"4", t:"fallback.Handler", f:"internal/fallback/fallback.go",
+   d:"Applies fail_open / fail_closed / local_fallback, with a circuit breaker.",
+   x:"<b>Position matters:</b> it directly wraps the things that can actually fail, so it observes Redis errors first-hand rather than receiving something another layer already reinterpreted."},
+  {n:"5", t:"limiter.AdaptiveLimiter", f:"internal/limiter/adaptive.go",
+   d:"Sheds a fraction of load when the limiter below it slows down.",
+   x:"<b>Position matters most here.</b> It sits <em>below</em> the lease cache deliberately. Above it, it would time lease hits (~1µs), its average would never reach the watermark, and shedding would never engage — a feature that looks implemented and does nothing."},
+  {n:"6", t:"limiter.ChainedLimiter", f:"internal/limiter/chained.go",
+   d:"Enforces per-caller → per-tenant → global tiers in order.",
+   x:"Tiers run narrowest-first so an abusive caller is stopped at its <em>own</em> tier and never reaches — or consumes — the shared ones. The known cost: when a later tier refuses, earlier tiers already consumed quota the request never used. Rolling that back needs two round trips per tier, so the small over-count is accepted and documented."},
+  {n:"7", t:"Redis limiters + Lua", f:"internal/limiter/redis.go",
+   d:"The actual shared counters. One atomic script per algorithm.",
+   x:"The bottom of the chain and the only shared state. Everything above exists either to avoid coming here, to survive it being unavailable, or to interpret what it returns."}
+];
+
+const SCENARIOS = [
+  {id:"hit", name:"Admitted from a local lease", kind:"ok",
+   sub:"The common case for a busy key — the whole point of the design. Zero Redis calls.",
+   steps:[
+    {h:"Request arrives", m:"middleware.go · Handler", w:"In-flight gauge +1, and a deferred panic recovery is armed.",
+     y:"A panic in a handler would otherwise kill the process and take every other in-flight request with it."},
+    {h:"Derive the key", m:"middleware.go · extractKey → boundComponent", w:"<code>X-User-ID: alice</code> → <code>user:alice</code>.",
+     y:"Each component is length-bounded and hashed if oversized, because these become Redis key names."},
+    {h:"Look up the cost", m:"main.go · costs map", w:"<code>/api/hello</code> is not in the route table → cost 1.",
+     y:"An exact-path map lookup, built once at startup. No per-request allocation."},
+    {h:"Penalty check", m:"penalty.go · penalised", w:"Local state says this key is clear and was confirmed recently → pass through. <b>No Redis call.</b>",
+     y:"Re-reading Redis on every request would cost a round trip for the overwhelming majority of callers who have no penalty at all."},
+    {h:"Lease hit", m:"lease.go · local", w:"The entry holds 3 units. Take 1, leaving 2. Decide locally and return.",
+     y:"Those units were already counted in Redis when the batch was drawn, so admitting from them cannot exceed the limit."},
+    {h:"Headers and handler", m:"middleware.go · setHeaders", w:"<code>X-RateLimit-Remaining: 2</code>, then the wrapped handler runs.",
+     y:"Deadlines are stored as absolute times, so the countdown is recomputed live rather than repeating a stale number."}],
+   out:{k:"ok", t:"200 OK · ~46 ns in the limiter · 0 Redis round trips · 0 allocations"}},
+
+  {id:"miss", name:"Admitted, drawing a fresh lease", kind:"ok",
+   sub:"The full path to Redis and back. Follow this one to see the whole system.",
+   steps:[
+    {h:"Key, cost, penalty check", m:"middleware.go → penalty.go", w:"Same as before: key <code>user:alice</code>, cost 1, no penalty.", y:""},
+    {h:"Lease miss", m:"lease.go · local → draw", w:"No usable lease. The key <em>is</em> known, so claim <code>1 + prefetch(4) = 5</code> units.",
+     y:"A key's first ever miss claims only 1 — batching starts once the key has shown it can spend a lease, otherwise a cold burst strands quota nobody uses."},
+    {h:"Breaker check", m:"fallback.go · breaker.allow", w:"Circuit is closed → consult the primary limiter.",
+     y:"If it were open, Redis would be skipped entirely rather than waiting out its timeout first."},
+    {h:"Adaptive gate", m:"adaptive.go · AllowN", w:"Multiplier is 1.0 → nothing shed. Start the latency timer.",
+     y:"It measures what it wraps — the chain and Redis — which is why it sits below the lease cache."},
+    {h:"Tier 1 · per-caller", m:"chained.go · AllowN", w:"Redis script on <code>rl:{tenant:acme|user:alice}</code>. Allowed.", y:""},
+    {h:"Tier 2 · per-tenant", m:"chained.go + middleware.TenantOf", w:"Key rewritten to <code>tenant:acme</code>. Allowed.",
+     y:"<code>TenantOf</code> parses the tenant out of the composite key. The old version took the substring before the first colon — which is the literal word “tenant”, so every tenant shared one bucket."},
+    {h:"Tier 3 · global", m:"chained.go", w:"Key rewritten to the constant <code>global</code>. Allowed.",
+     y:"Redis-backed, so this ceiling really is global. It used to be an in-memory counter, making it per-process."},
+    {h:"Inside the Lua script", m:"sliding_window.lua", w:"Get Redis's own clock; read both windows; interpolate; 5 + effective ≤ limit; <code>INCRBY 5</code>; <code>PEXPIRE</code>.",
+     y:"One atomic step, so no other node can interleave between the check and the increment."},
+    {h:"Record the leftover", m:"lease.go · store", w:"1 unit used, 4 left over → added to the local entry.",
+     y:"Added, not overwritten — replacing would discard another concurrent draw's unspent units."},
+    {h:"Feed the controller", m:"adaptive.go · observe", w:"Latency folded into the EWMA; the multiplier is stepped at most once per interval.",
+     y:"Stepping per request would tie the loop's speed to traffic volume instead of to time."}],
+   out:{k:"ok", t:"200 OK · 1 Redis round trip · 5 units consumed centrally, 4 banked locally"}},
+
+  {id:"quota", name:"Refused — over quota", kind:"bad",
+   sub:"And how the next few thousand refusals become almost free.",
+   steps:[
+    {h:"Down to the script", m:"…→ sliding_window.lua", w:"<code>effective + cost > limit</code> → refuse <em>without</em> incrementing.",
+     y:"A refused request must not consume quota, or being throttled would extend the throttle."},
+    {h:"Compute Retry-After", m:"sliding_window.lua", w:"How long until enough of the previous window ages out to fit this request.",
+     y:"Real arithmetic, not a fixed guess: the carry-over decays at a known rate, so the answer is exact."},
+    {h:"Cache the denial", m:"lease.go · store", w:"Stored for <code>min(TTL, RetryAfter)</code>.",
+     y:"Capped at Retry-After so a momentary throttle is never held past the moment quota returns. This is what makes abuse cheap."},
+    {h:"Count the strike", m:"penalty.go · recordStrike", w:"A quota denial is the caller's own fault → strike recorded locally.",
+     y:"Only caller-attributable denials count. Shedding and outages are excluded via <code>CallerAttributable</code>."},
+    {h:"Respond", m:"middleware.go", w:"429 with <code>Retry-After</code>, rounded up, minimum 1.",
+     y:"Rounding down would tell the client to retry too early, earning another denial and another strike."},
+    {h:"Every later refusal", m:"lease.go · local", w:"Answered from the negative cache. <b>No Redis call.</b>",
+     y:"An attacker at 10,000 rps now costs essentially no Redis traffic."}],
+   out:{k:"bad", t:"429 Too Many Requests · Retry-After: 1 · subsequent refusals cost 0 round trips"}},
+
+  {id:"penalty", name:"Refused — in the penalty box", kind:"bad",
+   sub:"What happens after a caller ignores its 429s for long enough.",
+   steps:[
+    {h:"Strikes accumulate", m:"penalty.go · recordStrike", w:"Each quota denial counts, in a tumbling window.",
+     y:"Tumbling, not sliding: a sliding window's deadline is pushed out by every strike, so it never closes and any caller that stays busy eventually trips a threshold it never really exceeded."},
+    {h:"Threshold crossed", m:"penalty.lua", w:"Offence count incremented; penalty = <code>base × 2^(n−1)</code>, clamped to max.",
+     y:"Clamped <em>before</em> the exponent overflows. Unguarded, 2^n became a non-finite value and Redis rejected the TTL — so the worst offenders stopped being penalised at all."},
+    {h:"Stored globally", m:"penalty.lua", w:"<code>SET pen:{key}:p … PX penalty</code>. Every node can see it.",
+     y:"Detection is local and cheap; enforcement is shared. The TTL is the remaining time, so no sweeper is needed."},
+    {h:"Later requests", m:"penalty.go · AllowN", w:"Blocked at the very first stage. <b>Nothing below is called.</b>",
+     y:"No lease, no Redis, no counting — the whole point of escalating rather than just returning more 429s."}],
+   out:{k:"bad", t:"429 · X-RateLimit-Denied-By: penalty · Retry-After = seconds left in the penalty"}},
+
+  {id:"open", name:"Redis is down · fail_open", kind:"warn",
+   sub:"Availability chosen over accuracy, and the breaker keeping it fast.",
+   steps:[
+    {h:"First few requests", m:"fallback.go · AllowN", w:"Redis errors after its timeout. Failures counted.",
+     y:"A cost error or a cancelled client context would <em>not</em> count here — neither indicates a backend problem."},
+    {h:"Breaker opens", m:"fallback.go · breaker.failure", w:"After the threshold, the circuit opens.",
+     y:"Without this every request pays the full Redis timeout before falling back — a dependency you chose to survive without would add its timeout to every response."},
+    {h:"Degrade", m:"fallback.go · degrade", w:"Return allowed, with <code>Limit = LimitUnknown</code>.",
+     y:"Explicitly unknown, not a made-up number. The middleware then omits the X-RateLimit headers rather than publishing a figure it cannot vouch for."},
+    {h:"Not cached", m:"lease.go · store", w:"A degraded result is never turned into a lease.",
+     y:"There is no counted quota behind it; leasing from it would keep admitting requests after Redis recovered."},
+    {h:"Recovery", m:"fallback.go · breaker.allow", w:"After the cooldown, exactly one probe is let through.",
+     y:"One, via compare-and-swap — a thundering herd against a recovering Redis would knock it straight back down."}],
+   out:{k:"warn", t:"200 OK · no X-RateLimit headers · ratelimiter_degraded_total climbing · breaker_open = 1"}},
+
+  {id:"closed", name:"Redis is down · fail_closed", kind:"bad",
+   sub:"The opposite choice — and the site of the project's worst bug.",
+   steps:[
+    {h:"Redis fails", m:"fallback.go · degrade", w:"Return <code>Allowed: false</code> <em>and</em> <code>ErrUnavailable</code>.",
+     y:"Both, deliberately, so the caller cannot mistake this for a normal denial."},
+    {h:"Not leased or cached", m:"lease.go · draw", w:"The error propagates straight up.", y:""},
+    {h:"Mapped to a status", m:"middleware.go · handleError", w:"<code>errors.Is(err, ErrUnavailable)</code> → 503.",
+     y:"Not 429: the caller is not over quota and its quota is intact. This is a server-side outage and the status should say so."},
+    {h:"The bug that used to live here", m:"middleware.go", w:"The old code called <code>next.ServeHTTP</code> on <em>any</em> error — admitting everything.",
+     y:"<code>fail_closed</code> silently became <code>fail_open</code>, on exactly the services that chose it because unmetered requests are dangerous. Now a handled failure returns a nil error, so checking only the error cannot let a request through."}],
+   out:{k:"bad", t:"503 Service Unavailable · Retry-After: 1 · denied_by = limiter_unavailable"}},
+
+  {id:"shed", name:"Refused — load shedding", kind:"warn",
+   sub:"Redis is alive but slow, so the limiter protects it.",
+   steps:[
+    {h:"Latency rises", m:"adaptive.go · observe", w:"EWMA of limiter latency crosses the high watermark.",
+     y:"Smoothed, so one slow outlier does not trigger shedding."},
+    {h:"Multiplier drops", m:"adaptive.go · adjust", w:"×0.75 per interval, floored at min_multiplier.",
+     y:"Floored so it never sheds <em>everything</em> — a limiter that refuses all traffic is worse than a slow one."},
+    {h:"Request shed", m:"adaptive.go · AllowN", w:"<code>rand.Float64() >= multiplier</code> → refuse before touching Redis.",
+     y:"Uses <code>math/rand/v2</code>, whose generator is per-CPU. The v1 global source is mutex-guarded and would serialise the hot path."},
+    {h:"No strike", m:"penalty.go · CallerAttributable", w:"A shed denial does <b>not</b> count against the caller.",
+     y:"Shedding is the service's condition, not the caller's. Counting it would penalise well-behaved callers during an overload and lock them out long after it passed."},
+    {h:"Recovery", m:"adaptive.go · adjust", w:"+0.05 per interval once latency drops below the low watermark.",
+     y:"Gentler than the decrease, and interval-based. The asymmetry is what damps oscillation — the same reason TCP uses it."}],
+   out:{k:"warn", t:"429 · X-RateLimit-Denied-By: adaptive_shed · adaptive_multiplier < 1.0"}},
+
+  {id:"cost", name:"Refused — impossible cost", kind:"warn",
+   sub:"A small case with a disproportionately important distinction.",
+   steps:[
+    {h:"Cost looked up", m:"main.go · costs map", w:"The route declares cost 150; the limit is 100.", y:""},
+    {h:"Rejected at the limiter", m:"limiter.go · checkCost", w:"Returns <code>ErrCostExceedsLimit</code>.",
+     y:"Checked before any state is touched — no point consuming quota for something that can never succeed."},
+    {h:"Not treated as an outage", m:"fallback.go · AllowN", w:"<code>IsCostError</code> → passed straight up; the breaker is untouched.",
+     y:"Otherwise one caller sending impossible costs could trip the breaker and degrade the limiter for everybody."},
+    {h:"Mapped to 400", m:"middleware.go · handleError", w:"400 Bad Request, not 429.",
+     y:"<b>The distinction that matters:</b> 429 means “not right now”, so a well-behaved client retries forever. This can never succeed, so it must be a client error. Config also rejects such a route at startup — this is the runtime backstop."}],
+   out:{k:"warn", t:"400 Bad Request · denied_by = invalid_cost"}}
+];
+
+const FILES = [
+  {p:"cmd/server/main.go", l:461, s:"Entry point. Assembles every component and owns the process lifecycle.",
+   b:"The only place that knows how the whole system fits together. Read it first, then follow it downwards. Nothing here contains limiting logic — it is pure wiring, which is why the order of assembly is documented at the top of the file.",
+   fns:[
+    {n:"main", d:"Calls run() and exits non-zero on error. Thin on purpose so deferred cleanup actually runs."},
+    {n:"run", d:"Loads config, builds the app, serves, and handles SIGTERM. Returns an error instead of exiting so defers fire."},
+    {n:"build", d:"Assembles the decorator chain in the load-bearing order, registers metrics, builds routes."},
+    {n:"buildChain", d:"Creates the three Redis-backed tiers (per_key, per_tenant, global) and their key-rewriting functions."},
+    {n:"buildSources", d:"Wires live component state to pull-based Prometheus collectors. Only enabled components contribute."},
+    {n:"routes", d:"The HTTP mux. Rate limits /api/*; leaves /healthz, /readyz, /metrics unlimited."},
+    {n:"newRedisClient", d:"Builds the Redis client with tight timeouts and warm idle connections."},
+    {n:"pingRedis", d:"Reports connectivity at startup but never blocks boot — the fallback strategy already covers Redis being down."},
+    {n:"newLocalLimiter", d:"Builds the in-memory limiter used by local_fallback. Only created when that strategy is selected."},
+    {n:"writeJSON", d:"Small JSON response helper for the demo endpoints."}]},
+
+  {p:"internal/limiter/limiter.go", l:192, s:"The contract everything shares: Limiter, Result, Config, and the error vocabulary.",
+   b:"Start here to understand the codebase's shape. It defines the single interface, the Result struct that flows back up the chain, and the distinction between 'throttled now' and 'can never succeed' that drives status codes throughout.",
+   fns:[
+    {n:"Limiter (interface)", d:"Allow / AllowN / Name. The one abstraction; every real limiter and every decorator implements it."},
+    {n:"Result (struct)", d:"Allowed, Limit, Remaining, ResetAfter, RetryAfter, DeniedBy. What travels back up the chain."},
+    {n:"Config (struct)", d:"Limit, Window, BurstMax, MaxKeys — shared by both algorithms."},
+    {n:"Config.Validate", d:"Rejects zero limits, sub-millisecond windows, negative bursts. Called at startup."},
+    {n:"Config.withDefaults", d:"Fills zero-valued optionals (BurstMax→Limit, MaxKeys→1M)."},
+    {n:"Config.Capacity", d:"The largest single request the config can ever admit, per algorithm. Used to reject impossible route costs."},
+    {n:"ParseAlgorithm", d:"Validates the algorithm name. Rejects the two removed algorithms rather than silently defaulting."},
+    {n:"CallerAttributable", d:"Whether a denial is the caller's fault. Excludes adaptive_shed and limiter_unavailable so overloads do not earn penalties."},
+    {n:"IsCostError", d:"Distinguishes an impossible cost (→400) from a throttle (→429) or an outage (→503)."},
+    {n:"checkCost", d:"Validates n against capacity. The single gate both algorithms call."},
+    {n:"ErrInvalidCost · ErrCostExceedsLimit · LimitUnknown · ShedDeniedBy · UnavailableDeniedBy", d:"The sentinel errors and DeniedBy vocabulary, kept next to Result so producers and consumers cannot drift."}]},
+
+  {p:"internal/limiter/sliding_window_counter.go", l:142, s:"In-memory sliding window counter.",
+   b:"One of the two real algorithms. Used for local_fallback, and the reference implementation for the Lua version — the two are kept behaviourally identical, including epoch-aligned windows.",
+   fns:[
+    {n:"NewSlidingWindowCounter", d:"Builds it over a bounded sharded map with idleTTL = 2 windows (the point at which state is provably irrelevant)."},
+    {n:"AllowN", d:"Rolls the window if needed, interpolates the carry-over, decides, increments."},
+    {n:"roll", d:"Advances prev/curr counters on a boundary. A jump of more than one window zeroes prev entirely."},
+    {n:"Keys", d:"Tracked key count, for the metrics gauge."},
+    {n:"retryAfterForCarryover", d:"How long until enough of the previous window decays to fit this request. Real arithmetic, not a guess."}]},
+
+  {p:"internal/limiter/token_bucket.go", l:119, s:"In-memory token bucket.",
+   b:"The other real algorithm. Chosen when bursts are a feature rather than a threat. Refill is computed lazily from elapsed time, so idle keys cost nothing and no goroutine is needed.",
+   fns:[
+    {n:"NewTokenBucket", d:"Precomputes the per-millisecond refill rate and an idleTTL of one full refill plus a window."},
+    {n:"AllowN", d:"Refills by elapsed time, then consumes or refuses. Guards against a wall clock stepping backwards."},
+    {n:"durationFor", d:"How long to accrue N tokens, rounded up so a client never retries a millisecond early."},
+    {n:"Keys", d:"Tracked key count, for the metrics gauge."}]},
+
+  {p:"internal/limiter/redis.go", l:173, s:"Both Redis-backed limiters — the production path.",
+   b:"Where the distributed enforcement lives. Takes a redis.Scripter (so a ClusterClient would work), uses redis.NewScript to handle EVALSHA and NOSCRIPT reloads safely, and validates every reply's shape.",
+   fns:[
+    {n:"NewRedisLimiter", d:"Factory: returns the Redis limiter for the requested algorithm. The fix for the algorithm setting never reaching Redis."},
+    {n:"redisKey", d:"Wraps a key in a Cluster hash tag so all script-derived keys share one slot."},
+    {n:"runScript", d:"Runs a script and validates the reply length. A short reply is a bug, not a runtime condition."},
+    {n:"RedisSlidingWindow.AllowN", d:"Runs sliding_window.lua and maps the reply to a Result."},
+    {n:"RedisTokenBucket.AllowN", d:"Runs token_bucket.lua and maps the reply to a Result."},
+    {n:"newRedisSlidingWindow · newRedisTokenBucket", d:"Constructors. redis.NewScript keeps the SHA internally — doing it by hand was a data race."}]},
+
+  {p:"internal/limiter/sliding_window.lua", l:87, s:"Atomic sliding window counter, executed inside Redis.",
+   b:"The heart of distributed correctness. Reads both window buckets, interpolates, decides, increments and sets a fixed absolute expiry — all in one uninterruptible step. Takes its clock from Redis so nodes with drifted clocks still agree on window boundaries.",
+   fns:[
+    {n:"KEYS[1]", d:"Hash-tagged base key. The two window buckets are derived from it inside the script."},
+    {n:"ARGV[1..3]", d:"limit, window length in ms, cost."},
+    {n:"returns", d:"{allowed, effective, remaining, reset_after_ms, retry_after_ms}"}]},
+
+  {p:"internal/limiter/token_bucket.lua", l:66, s:"Atomic token bucket, executed inside Redis.",
+   b:"Stores tokens and a timestamp in a hash. Read, refill, consume and write must be one step or two nodes both spend the same tokens. Tokens are written with explicit string formatting because Redis truncates Lua numbers passed as command arguments.",
+   fns:[
+    {n:"KEYS[1]", d:"Hash-tagged bucket key holding fields tk (tokens) and ts (timestamp)."},
+    {n:"ARGV[1..4]", d:"refill per ms, burst capacity, cost, idle slack for the TTL."},
+    {n:"returns", d:"{allowed, remaining, reset_after_ms, retry_after_ms}"}]},
+
+  {p:"internal/limiter/lease.go", l:370, s:"Quota leasing plus negative caching. The performance centrepiece.",
+   b:"Deliberately NOT a cache of decisions — that silently breaks the limit. Instead it claims quota in blocks from the shared limiter so everything handed out locally was already counted centrally. Read the type comment; it explains the failure mode it exists to avoid.",
+   fns:[
+    {n:"NewLeaseCache", d:"Validates the config and rejects one that would do nothing at all."},
+    {n:"AllowN", d:"Try local, else draw from the shared limiter, else store the leftover. Three short steps."},
+    {n:"local", d:"Answers from an existing lease or cached denial. Also reports a drawHint for sizing the next claim."},
+    {n:"draw", d:"Claims cost + prefetch. Warms up on a key's first miss; shrinks the batch near the limit; retries bare if the batch alone was refused."},
+    {n:"store", d:"Banks leftover units (accumulating, never replacing) or caches the denial capped at Retry-After."},
+    {n:"Stats · LeaseStats.HitRate", d:"Hits, misses, tracked keys — feeds the lease metrics."},
+    {n:"drawHint (struct)", d:"What local() learned: whether the key is known, and the last reported headroom."},
+    {n:"leaseEntry (struct)", d:"Units banked, last headroom, denial flag, and absolute expiry/reset/retry deadlines."}]},
+
+  {p:"internal/limiter/chained.go", l:120, s:"Hierarchical tiers: per-caller → per-tenant → global.",
+   b:"Composes any number of Limiters, each with its own key-rewriting function. The first refusal short-circuits and names itself, so a client can tell 'you are over your quota' from 'the service is saturated'.",
+   fns:[
+    {n:"NewChainedLimiter", d:"Validates tiers: at least one, unique non-empty names, no reserved names. An empty chain used to deny everything silently."},
+    {n:"AllowN", d:"Runs each tier in order; on success reports the most restrictive tier's headroom."},
+    {n:"Tiers", d:"Tier names, so metrics can pre-register them as denied_by values."},
+    {n:"ChainTier (struct)", d:"Name, Limiter, and KeyFunc — the per-tier key rewrite."}]},
+
+  {p:"internal/limiter/adaptive.go", l:238, s:"AIMD load shedding driven by observed latency.",
+   b:"Protects Redis from a stampede: once it slows, sending more traffic makes it worse for everyone. Entirely lock-free — the multiplier and the EWMA are both updated by compare-and-swap, so the hot path takes no mutex.",
+   fns:[
+    {n:"NewAdaptiveLimiter", d:"Validates the control-loop parameters, including that the watermarks have a gap (no gap ⇒ oscillation)."},
+    {n:"AllowN", d:"Probabilistically sheds, else delegates and times the inner call."},
+    {n:"observe", d:"Folds one latency sample into the EWMA, then steps the multiplier at most once per interval."},
+    {n:"adjust", d:"One AIMD step: multiplicative decrease on overload, additive increase when healthy, deadband between."},
+    {n:"Multiplier · EWMA · Shed", d:"Lock-free reads for the metrics layer."},
+    {n:"ForceMultiplier", d:"Test seam. Lets tests drive the shedding path without depending on real latency."},
+    {n:"AdaptiveConfig.Validate", d:"Range-checks every parameter — a ratio of 1.0 or an inverted pair of watermarks makes the loop useless."}]},
+
+  {p:"internal/fallback/fallback.go", l:277, s:"Failure strategies plus a circuit breaker.",
+   b:"Decides what happens when the shared limiter is unavailable. The key API decision: a handled failure returns a decision with a NIL error, because returning both invites a caller to check only the error and let the request through — which is precisely how fail_closed became fail_open.",
+   fns:[
+    {n:"New", d:"Validates the strategy and requires a local limiter only for local_fallback."},
+    {n:"AllowN", d:"Breaker check, then the primary; classifies the error and degrades if it is a real backend failure."},
+    {n:"degrade", d:"Applies the chosen strategy. No permissive default — an impossible strategy fails closed."},
+    {n:"ParseStrategy", d:"Rejects unknown names. A typo must never resolve to allow-everything."},
+    {n:"Stats", d:"Degraded count and whether the circuit is open."},
+    {n:"breaker.allow", d:"Whether to consult the primary. Half-open lets exactly one probe through per cooldown, via CAS."},
+    {n:"breaker.failure · success · isOpen", d:"Trip after N consecutive failures; reset on success."},
+    {n:"ErrUnavailable · DeniedByUnavailable", d:"The sentinel that becomes a 503 rather than a 429."}]},
+
+  {p:"internal/penalty/penalty.go", l:322, s:"Escalating penalty box for repeat abusers.",
+   b:"More 429s do not deter a caller that ignores them, and cost a round trip either way. Strikes are counted per node (cheap); the resulting penalty lives in Redis (shared). Only caller-attributable denials count, so an overload cannot penalise innocent traffic.",
+   fns:[
+    {n:"New", d:"Validates the config and builds the local state map sized to outlive any penalty."},
+    {n:"AllowN", d:"Blocks a penalised key before anything below runs; otherwise delegates and may record a strike."},
+    {n:"penalised", d:"Is this key blocked? Consults Redis at most once per CheckInterval, so the common path costs zero round trips."},
+    {n:"remember", d:"Caches the outcome of a Redis lookup, positive or negative."},
+    {n:"recordStrike", d:"Counts a denial in a tumbling local window; runs the escalation script when the threshold trips."},
+    {n:"Stats", d:"Denied and escalation counts plus tracked keys."},
+    {n:"baseKey", d:"Hash-tagged base key from which the Lua script derives its sub-keys."},
+    {n:"Client (interface)", d:"The minimal Redis surface needed: Scripter + PTTL. Both Client and ClusterClient satisfy it."}]},
+
+  {p:"internal/penalty/penalty.lua", l:50, s:"Atomic escalation: bump the offence count, compute and store the penalty.",
+   b:"Must be atomic or two nodes crossing the threshold together charge one offence twice. Clamps the exponential BEFORE it can overflow — unguarded, base × 2^n became non-finite and Redis rejected the TTL, so the worst offenders stopped being penalised entirely.",
+   fns:[
+    {n:"KEYS[1]", d:"Hash-tagged base key; :p (penalty) and :n (offence count) derive from it."},
+    {n:"ARGV[1..2]", d:"base penalty ms, max penalty ms."},
+    {n:"returns", d:"{penalty_ms, offence_count}"}]},
+
+  {p:"internal/middleware/middleware.go", l:372, s:"The HTTP layer: key derivation, headers, status mapping, panic recovery.",
+   b:"The boundary between HTTP and the limiter. Everything below it is transport-agnostic. Contains the security-sensitive key derivation and the status-code decisions that make the difference between a client retrying sensibly and retrying forever.",
+   fns:[
+    {n:"Handler", d:"The middleware itself. Built ONCE at startup — building it per request allocated a closure on the hot path."},
+    {n:"handleError", d:"Maps limiter errors to 400 / 503 / 500. Every branch is a deliberate status choice."},
+    {n:"recoverPanic", d:"Recovers panics as 500s, but re-panics http.ErrAbortHandler to honour net/http's contract."},
+    {n:"setHeaders", d:"Emits X-RateLimit-* and Retry-After. Omits them when no real limit applies; rounds Retry-After up."},
+    {n:"writeError", d:"JSON error bodies, matching the rest of the API rather than http.Error's text/plain."},
+    {n:"extractKey", d:"Request → (key, keyType) for ip / user / tenant modes."},
+    {n:"clientIP", d:"Resolves the caller's address, counting trusted proxy hops from the RIGHT — the part a client cannot forge."},
+    {n:"boundComponent", d:"Caps one key component, hashing if oversized. Hashes rather than truncates so distinct values stay distinct."},
+    {n:"TenantOf", d:"Parses the tenant out of a composite key. Used by the chain's per-tenant tier."},
+    {n:"denialMessage · ceilSeconds · header · peerIP", d:"Small helpers for messages, rounding, and header/address reading."},
+    {n:"ParseKeyMode · Config.Validate", d:"Validates key mode and proxy hops at startup."}]},
+
+  {p:"internal/shardmap/shardmap.go", l:207, s:"Bounded, sharded, LRU-evicting map. Shared infrastructure.",
+   b:"Backs the in-memory limiters, the lease cache and the penalty box. Solves two problems a plain map+mutex gets wrong: one mutex serialises every request in the process, and an unbounded map is an OOM vector under high key cardinality. 256 shards, per-shard caps, LRU eviction.",
+   fns:[
+    {n:"New", d:"Builds the map with a per-shard cap and an idleTTL. Choosing idleTTL correctly is what makes eviction lossless."},
+    {n:"Do", d:"Get-or-create, runs fn under the shard lock. NOTE: fn runs on newly created values too — an accumulating fn must treat create()'s result as empty or it double-counts."},
+    {n:"Update", d:"Runs fn only if the key exists; fn returns false to delete. Also reclaims entries idle past idleTTL, so reads self-heal."},
+    {n:"Len", d:"O(1) live count via an atomic, so the metrics scrape does not lock 256 mutexes."},
+    {n:"shard.evict", d:"Drops idle entries, then the coldest, on insert. Amortised — no periodic full scan."},
+    {n:"pushFront · moveToFront · remove · unlink", d:"Intrusive LRU list operations, all under the shard lock."}]},
+
+  {p:"internal/config/config.go", l:506, s:"Load, default and validate the whole configuration.",
+   b:"Deliberately hostile to mistakes, because a misconfigured rate limiter still returns 200s and nothing looks wrong until the protected thing falls over. Unknown keys are errors; every enum is parsed; combinations are cross-checked; all problems report at once.",
+   fns:[
+    {n:"Load", d:"Reads YAML, applies env overrides, decodes with ErrorUnused (so typos fail), then validates."},
+    {n:"Validate", d:"Every field and every cross-field rule. Collects all errors via errors.Join instead of returning the first."},
+    {n:"setDefaults", d:"Seeds every key. Component defaults come from that component's own DefaultConfig, so there is one source of truth."},
+    {n:"LimiterCore", d:"The core limiter.Config. main builds from this, so what was validated is what runs."},
+    {n:"Algorithm · KeyMode", d:"Return the already-validated enums."},
+    {n:"FallbackConfig · LeaseConfig · AdaptiveConfig · PenaltyConfig", d:"Map config to each component's own config type, keeping the mapping in one place."},
+    {n:"CostMap", d:"Exact-path → cost lookup. Cost 1 is omitted since it is the default."}]},
+
+  {p:"internal/config/logging.go", l:44, s:"Log level parsing and logger construction.",
+   b:"Small by design. JSON by default because these logs are meant to be shipped and queried; text exists for local development.",
+   fns:[
+    {n:"ParseLogLevel", d:"Maps debug/info/warn/error to slog levels; rejects anything else."},
+    {n:"Config.NewLogger", d:"Builds the slog logger in the configured format and level."}]},
+
+  {p:"internal/metrics/metrics.go", l:219, s:"Prometheus registration and the request-path recorder.",
+   b:"Two conventions: label children are resolved once at startup (not per request), and anything derived from live state is a CounterFunc/GaugeFunc computed at scrape time — so it cannot go stale and needs no goroutine.",
+   fns:[
+    {n:"NewRecorder", d:"Registers request-path metrics and pre-resolves every label child, including all denied_by reasons."},
+    {n:"Recorder.Allow · Deny", d:"Hot-path counters. Deny takes the reason; an unregistered one lands in 'other' rather than being lost."},
+    {n:"Recorder.ObserveLatency", d:"Latency histogram with sub-millisecond buckets, so a lease hit is distinguishable from a round trip."},
+    {n:"Recorder.InFlightAdd · Panic · Error", d:"In-flight gauge and the two counters that should stay at zero."},
+    {n:"RegisterSources", d:"Wires pull-based collectors to live state. Nil fields are skipped, so a minimal deployment exports a minimal surface."},
+    {n:"Sources (struct)", d:"The set of optional accessors main provides for enabled components."}]},
+
+  {p:"cmd/server/main_test.go", l:516, s:"End-to-end tests over the assembled app.",
+   b:"Each component is unit-tested in its own package; what can only break here is the assembly. Includes a full-stack test with every optional stage enabled at once, for both algorithms.",
+   fns:[
+    {n:"buildApp", d:"Writes a config, points it at in-process Redis, runs build(). The harness for every test here."},
+    {n:"TestFullStackEnforcesLimit", d:"Every feature on, both algorithms — the per-caller limit must hold end to end."},
+    {n:"TestFailClosedRejectsWhenRedisIsDown", d:"Top-to-bottom proof of the worst bug: 503, not 200."},
+    {n:"TestMetricsExposeTheDocumentedSeries", d:"Guards against a dashboard referencing a metric nothing registers."},
+    {n:"TestChainedTiersIsolateTenants", d:"End-to-end form of the per-tenant key bug."},
+    {n:"TestHealthAndMetricsAreNotRateLimited", d:"Ops endpoints must answer while API traffic is throttled."}]},
+
+  {p:"internal/limiter/redis_integration_test.go", l:244, s:"The same Lua scripts against a REAL Redis.",
+   b:"The other tests use miniredis, which is a reimplementation with its own Lua host. These stop the two diverging on TIME resolution, INCRBY on a missing key, PEXPIRE semantics or number conversion. Skips unless RATELIMITER_TEST_REDIS_ADDR is set; CI provides it.",
+   fns:[
+    {n:"TestIntegrationConcurrentExactness", d:"4 simulated nodes, 400 concurrent requests, limit 100 — exactly 100 admitted."},
+    {n:"TestIntegrationWindowKeysExpire", d:"Window keys must carry a bounded TTL, or they accumulate forever."},
+    {n:"TestIntegrationScriptSurvivesFlush", d:"After SCRIPT FLUSH the client must reload rather than fail every request."},
+    {n:"TestIntegrationTokenBucketRefills", d:"Refill arithmetic against a real clock and real float round-tripping."}]},
+
+  {p:"config.yaml", l:0, s:"The shipped configuration, commented in full.",
+   b:"Doubles as documentation: every option explains not just what it does but why the default is what it is. A test loads this exact file and asserts it validates, so a committed config can never be broken.", fns:[]},
+  {p:".golangci.yml", l:0, s:"Linter configuration.",
+   b:"A narrow set, chosen because each one has caught a real defect here — unused found dead code, unparam found a stale parameter, nilerr catches the shape of the fail_closed bug.", fns:[]},
+  {p:".github/workflows/ci.yml", l:0, s:"CI: test, integration, benchmarks, lint, Docker.",
+   b:"Five jobs. The integration job is the important one: it runs the Lua against a real Redis, which miniredis cannot fully substitute for. The Docker job boots the image with no Redis at all to prove fail_open really serves.", fns:[]},
+  {p:"k6/", l:0, s:"Load tests: steady, burst, chaos.",
+   b:"All use constant-arrival-rate, not constant-vus. The difference matters enormously: arrival-rate sends N requests/second total, while constant-vus sends N per virtual user — so 50 VUs would silently produce 50× the intended load.", fns:[]},
+  {p:"grafana/ · prometheus.yml", l:0, s:"Provisioned dashboard and scrape config.",
+   b:"The dashboard is committed so the stack comes up already useful. Redis metrics come via a redis_exporter sidecar — pointing a Prometheus scrape job straight at :6379 never worked, since Redis speaks RESP, not the Prometheus format.", fns:[]},
+  {p:"Dockerfile · docker-compose.yml", l:0, s:"Multi-stage build and the local stack.",
+   b:"Static binary in a minimal image, running as an unprivileged user — a rate limiter is internet-facing by definition, so an RCE should not also hand over root. Compose brings up app, Redis, exporter, Prometheus and Grafana in one command.", fns:[]},
+  {p:"Makefile", l:0, s:"Every task, self-documented via make help.",
+   b:"The entry point for anything you want to do: build, check, test, test-race, cover, bench, docker-up, redis-stop, k6-*.", fns:[]}
+];
+
+const BUGS = [
+  {t:"fail_closed silently failed open", sev:"critical",
+   w:"The middleware called <code>next.ServeHTTP</code> on <em>any</em> limiter error, so a Redis outage admitted every request regardless of the configured strategy.",
+   l:"When a function returns both a value and an error, decide what happens if a caller checks only one. Here the fix was structural — handled failures now return a nil error — rather than adding another condition that could be forgotten again."},
+  {t:"The algorithm setting never reached Redis", sev:"critical",
+   w:"It only chose the <em>local fallback</em> limiter. The distributed path was hardcoded to sliding window, so <code>token_bucket</code> was unreachable in production.",
+   l:"A config option that appears to work is worse than one that is missing. Test that a setting changes the thing you think it changes."},
+  {t:"Every tenant shared one bucket", sev:"critical",
+   w:"The per-tenant key used the substring before the first colon of <code>tenant:acme|user:alice</code> — which is the literal word <code>tenant</code>.",
+   l:"String parsing of structured keys needs a test with two <em>different</em> inputs. One tenant would have passed every test."},
+  {t:"The 'global' limit was per-process", sev:"high",
+   w:"The tenant and global tiers used in-memory limiters, so N servers meant N separate global ceilings.",
+   l:"'Global' is a claim about scope. Check that shared state is actually shared."},
+  {t:"The cache broke the limit it enforced", sev:"critical",
+   w:"Caching the decision for 5ms meant a limit of 100/s admitting ~1000/s at 1000 rps on one key — and the error grew with request rate.",
+   l:"The centrepiece lesson: you cannot skip the counter and still count. Leasing works because it reverses the order — count first, then hand out."},
+  {t:"Sub-second windows crashed", sev:"high",
+   w:"<code>int64(Window.Seconds())</code> is 0 for 500ms, then used as a divisor.",
+   l:"Unit conversions that truncate need a validated lower bound. The window is now milliseconds throughout, with a minimum enforced at startup."},
+  {t:"Persistent offenders stopped being penalised", sev:"high",
+   w:"<code>base × 2^n</code> overflowed to a non-finite value, which Redis rejected as an invalid TTL — so the very worst callers escaped.",
+   l:"Clamp before the arithmetic that can overflow, not after. And notice that the failure mode was the exact opposite of the intent."},
+  {t:"The 'fixed' strike window never closed", sev:"medium",
+   w:"The TTL was refreshed on every strike, making it sliding, so any caller that stayed busy eventually tripped a threshold it never really exceeded.",
+   l:"'Window' is ambiguous. Tumbling and sliding are different, and the difference is whether the deadline moves."},
+  {t:"Load shedding punished innocent callers", sev:"medium",
+   w:"Every denial counted as a strike, including <code>adaptive_shed</code>, so an overload marched well-behaved callers into the penalty box.",
+   l:"Attribute a failure before acting on it. Not every refusal is the caller's fault."},
+  {t:"Rate limits were trivially bypassable", sev:"critical",
+   w:"<code>X-Forwarded-For</code> was trusted wholesale, so rotating the header bought a fresh quota per request.",
+   l:"Any client-controlled input used as an identity needs a trust model. Counting proxy hops from the right is the standard answer."},
+  {t:"Unbounded maps were an OOM vector", sev:"high",
+   w:"Key maps grew without limit; IP-keyed traffic from a botnet would grow them until the process died.",
+   l:"Anything keyed by untrusted input needs a bound. The subtle part is choosing an eviction TTL that makes eviction lossless, or eviction itself becomes a bypass."},
+  {t:"The controller reacted to volume, not time", sev:"medium",
+   w:"AIMD stepped once per request, so a busy service slammed to the floor in a millisecond and an idle one never recovered.",
+   l:"A control loop's rate must be defined in time. Also present: a racy read-modify-write that lost concurrent samples, fixed with compare-and-swap."},
+  {t:"Data race on the cached script SHA", sev:"medium",
+   w:"Concurrent NOSCRIPT reloads wrote a shared field.",
+   l:"Prefer the library primitive (<code>redis.NewScript</code>) over hand-rolling caching you have to make thread-safe yourself."},
+  {t:"Impossible costs became infinite retry loops", sev:"medium",
+   w:"A cost larger than the limit returned 429, so a well-behaved client retried forever on a request that could never succeed.",
+   l:"429 means 'not right now'. If the answer is 'not ever', the status must say so — hence 400."},
+  {t:"No config validation at all", sev:"high",
+   w:"A typo in <code>fail_closed</code> silently allowed everything, and per-route limit/window were parsed and ignored.",
+   l:"For systems that fail silently, validation is a feature. Reject unknown keys; never default an enum."},
+  {t:"Two metrics nothing ever populated", sev:"low",
+   w:"<code>adaptive_shed_total</code> and <code>active_keys</code> were declared and never incremented — a dashboard panel permanently reading zero.",
+   l:"A metric that reads zero is indistinguishable from a healthy one. Test that the series you depend on actually exist."},
+  {t:"Bugs found by my own new tests", sev:"low",
+   w:"The rewrite introduced four: a timestamp stamped after eviction (so every in-memory limiter admitted everything), a callback run on newly-created values (double-counting leases and mis-counting strikes), lease overwrites discarding quota, and cold-burst prefetching stranding it.",
+   l:"The most valuable lesson here. All four were caught because the tests assert <em>behaviour</em> — 'exactly 100 of 500 concurrent requests are admitted' — not merely that nothing crashed. A race-detector-clean test suite passes just as happily for a limiter that admits the wrong number."}
+];
+
+const QUIZ = [
+  {q:"Why is the adaptive limiter below the lease cache instead of above it?",
+   a:"Above it, it would measure lease hits (~1µs) rather than Redis round trips. Its average would never approach the high watermark, so load shedding would never engage — the feature would look implemented and do nothing. It has to wrap the thing whose latency actually matters."},
+  {q:"Why is caching the decision for a few milliseconds wrong, when caching seems obviously good?",
+   a:"Because requests served from cache consume no quota anywhere. With a 5ms cache and 1000 rps on one key, only ~200 requests per second reach Redis and ~800 are invisible, so a 100/s limit admits 1000/s. Worse, the error grows with request rate — the limiter is least accurate exactly when it matters most. Leasing fixes it by counting units centrally BEFORE handing them out."},
+  {q:"Why does a key's first lease miss claim no extra units?",
+   a:"In a simultaneous burst on a cold key, every concurrent request misses before any lease exists. If each claimed a full batch, the quota would be consumed centrally and stranded locally with nobody left to spend it — measured at 15 admitted against a limit of 100. Warming up costs one extra round trip per key and lifts that to 76–100."},
+  {q:"What must shardmap's idleTTL be set to, and why does the answer matter so much?",
+   a:"The point at which the entry's state stops affecting decisions: two windows for the sliding counter, a full refill for the token bucket. Evict sooner and the key gets a fresh quota — so a wrong idleTTL turns LRU eviction into a rate limit bypass."},
+  {q:"Why does the Lua script take the time from Redis rather than from the calling server?",
+   a:"So all nodes share one clock. With per-node clocks, two servers drifted by 200ms disagree about which window a request belongs to, so the same request is counted differently depending on who received it. The cost is a non-deterministic script, which is safe on Redis 5+ where replicas receive the resulting writes rather than the script."},
+  {q:"Why 503 rather than 429 when fail_closed rejects during a Redis outage?",
+   a:"The caller is not over quota and its quota is intact — the limiter is broken. 429 would tell the client it misbehaved and invite it to back off on a quota that was never exceeded. 503 correctly says this is the server's problem."},
+  {q:"Why is a circuit breaker necessary if there is already a fallback strategy?",
+   a:"Without it, every request waits out the full Redis timeout before falling back. So a dependency you explicitly decided to survive without instead adds its timeout to every single response. The breaker skips Redis entirely once it is clearly down, and lets one probe per cooldown test recovery."},
+  {q:"Why does /healthz deliberately NOT check Redis?",
+   a:"Liveness asks 'is this process healthy?'. If it checked Redis, a Redis outage would make the orchestrator restart every node — during the exact incident the fallback strategy exists to survive. /readyz checks Redis because readiness asks a different question: should traffic be sent here?"},
+  {q:"Why is an oversized header value hashed rather than truncated?",
+   a:"Truncation merges every caller sharing a prefix into one quota — simultaneously a bypass (use someone else's headroom) and a denial of service (exhaust theirs). Hashing keeps distinct values distinct. And each component is bounded separately so the tenant:…|user:… structure survives for the chain's tenant tier."},
+  {q:"Why does the penalty box count strikes locally instead of writing every denial to Redis?",
+   a:"Writing per denial would cost an extra round trip on exactly the traffic the box exists to make cheap. The trade-off: an offender spread across N nodes needs up to N×threshold denials to trip. Once tripped, the penalty is shared globally — detection is local, enforcement is not."},
+  {q:"Why does PEXPIRE run unconditionally instead of only on the first write?",
+   a:"The key's name is bound to its window start, so its correct lifetime is a fixed absolute deadline — recomputing it is idempotent, and the TTL shortens rather than being pushed out. The conditional version saves one O(1) command but leaks the key forever if that single call is ever lost, which happens whenever the key was created by anything else."},
+  {q:"What is the trade-off in the chained limiter, and why was it accepted?",
+   a:"When a later tier refuses, earlier tiers already consumed quota the request never used. Rolling that back needs a two-phase peek-then-commit across every tier, doubling round trips on the hot path. The over-count is bounded by cost × tiers_passed per refusal and self-corrects within a window, so the round trips are not worth it. Tiers still run narrowest-first so an abuser is stopped at its own tier."},
+  {q:"Why does shardmap.Do run its callback on newly created values too — and what bug did that cause?",
+   a:"It is the simpler contract: the callback holds all the logic and create() supplies an empty starting point. But an accumulating callback that assumes create() already contains its contribution counts the first call twice. That inflated leases (108 admitted against a limit of 100) and made the penalty box trip one strike early. Both were fixed by having create() return the zero value."},
+  {q:"Why does the config layer reject unknown keys instead of ignoring them?",
+   a:"Because a misconfigured rate limiter still returns 200s — nothing looks wrong until the protected service falls over. A misspelled key you believe you enabled would silently not exist. The same reasoning drives parsing every enum instead of defaulting it: a typo in fail_closed must never become allow-everything."},
+  {q:"Why constant-arrival-rate rather than constant-vus in the k6 tests?",
+   a:"Arrival-rate sends N requests per second in total; constant-vus sends N per virtual user. With 50 VUs that is 50× the intended load, which makes every number in the report meaningless. It is an easy mistake and it invalidates the whole test."},
+  {q:"Why does the middleware build its handler once at startup rather than per request?",
+   a:"Building it per request allocates a closure and an http.HandlerFunc on every single request — pure waste on the hot path, since the wrapped handler never changes. It is a one-line difference that shows up directly in allocation counts."}
+];
+
+/* ─────────────── render ─────────────── */
+const $=(s,r=document)=>r.querySelector(s), el=(t,c,h)=>{const n=document.createElement(t);
+  if(c)n.className=c; if(h!==undefined)n.innerHTML=h; return n;};
+
+/* chain */
+const chainBox=$("#chain");
+CHAIN.forEach((L,i)=>{
+  const d=el("div","lyr");
+  d.innerHTML=`<div class="n">${L.n}</div><div class="bd">
+    <div class="t"><code>${L.t}</code></div>
+    <div class="d">${L.d}</div>
+    <div class="x"><p class="why" style="margin:0 0 6px">${L.x}</p>
+      <span class="tag">${L.f}</span></div></div>`;
+  d.onclick=()=>d.classList.toggle("sel");
+  chainBox.append(d);
+  if(i<CHAIN.length-1) chainBox.append(el("div","arrow","▼"));
+});
+
+/* tracer */
+const pills=$("#scen"), tout=$("#trace-out");
+function drawTrace(id){
+  const s=SCENARIOS.find(x=>x.id===id);
+  [...pills.children].forEach(b=>b.classList.toggle("on",b.dataset.id===id));
+  tout.innerHTML="";
+  const head=el("div","card");
+  head.innerHTML=`<h3 style="margin-bottom:2px">${s.name}</h3>
+    <p class="mini" style="margin:0">${s.sub}</p>`;
+  tout.append(head);
+  const wrap=el("div","steps");
+  s.steps.forEach(st=>{
+    const d=el("div","step");
+    d.innerHTML=`<div><div class="sh">${st.h}</div><div class="sm">${st.m}</div>
+      <div class="sw">${st.w}</div>
+      ${st.y?`<div class="sy"><b>Why:</b> ${st.y}</div>`:""}</div>`;
+    wrap.append(d);
+  });
+  tout.append(wrap);
+  tout.append(el("div","outcome "+s.out.k,"→ "+s.out.t));
+}
+SCENARIOS.forEach((s,i)=>{
+  const b=el("button","pill"+(i===0?" on":""),s.name);
+  b.dataset.id=s.id; b.onclick=()=>drawTrace(s.id); pills.append(b);
+});
+drawTrace(SCENARIOS[0].id);
+
+/* files */
+const filesBox=$("#files"), qIn=$("#q"), qN=$("#qn");
+function drawFiles(term=""){
+  const t=term.trim().toLowerCase();
+  filesBox.innerHTML=""; let shown=0, fnHits=0;
+  FILES.forEach(f=>{
+    const hay=(f.p+" "+f.s+" "+f.b+" "+f.fns.map(x=>x.n+" "+x.d).join(" ")).toLowerCase();
+    if(t && !hay.includes(t)) return;
+    shown++;
+    const matchedFns=t?f.fns.filter(x=>(x.n+" "+x.d).toLowerCase().includes(t)):f.fns;
+    fnHits+=matchedFns.length;
+    const item=el("div","fitem"+(t?" open":""));
+    const head=el("div","fh");
+    head.innerHTML=`<span class="p">${f.p}</span>${f.l?`<span class="l">${f.l} lines</span>`:""}
+      <span class="s">${f.s}</span>`;
+    const body=el("div","fb");
+    body.innerHTML=`<p class="why" style="margin:0"><b>Why it exists:</b> ${f.b}</p>`;
+    if(f.fns.length){
+      const list=el("div","fns");
+      (matchedFns.length?matchedFns:f.fns).forEach(x=>{
+        list.append(el("div","fn",`<div class="fnn">${x.n}</div><div>${x.d}</div>`));
+      });
+      body.append(el("h4",null,matchedFns.length&&t?"Matching functions":"Functions"), list);
+    }
+    head.onclick=()=>item.classList.toggle("open");
+    item.append(head,body); filesBox.append(item);
+  });
+  qN.textContent = t
+    ? `${shown} file${shown===1?"":"s"}, ${fnHits} matching function${fnHits===1?"":"s"}`
+    : `${FILES.length} files. Click one to expand, or search above.`;
+  if(!shown) filesBox.innerHTML='<p class="hint">No match. Try <code>lease</code>, <code>breaker</code>, <code>shardmap</code>, <code>penalised</code>.</p>';
+}
+qIn.oninput=()=>drawFiles(qIn.value);
+drawFiles();
+
+/* bugs */
+const bugsBox=$("#bugs-out");
+const sevTag={critical:"b",high:"b",medium:"w",low:""};
+BUGS.forEach(b=>{
+  const c=el("div","card");
+  c.innerHTML=`<h3 style="margin-bottom:4px">${b.t}
+      <span class="tag ${sevTag[b.sev]}" style="vertical-align:middle">${b.sev}</span></h3>
+    <p style="margin:6px 0"><b>What happened:</b> ${b.w}</p>
+    <p class="why" style="margin:0"><b>The lesson:</b> ${b.l}</p>`;
+  bugsBox.append(c);
+});
+
+/* quiz */
+const quizBox=$("#quiz-out");
+QUIZ.forEach((q,i)=>{
+  const d=el("div","q");
+  d.innerHTML=`<div class="qh"><span class="m">Q${i+1}</span><span>${q.q}</span></div>
+    <div class="qa">${q.a}</div>`;
+  d.querySelector(".qh").onclick=()=>d.classList.toggle("open");
+  quizBox.append(d);
+});
+
+/* theme */
+const tog=$("#tog"), root=document.documentElement;
+tog.onclick=()=>{
+  const cur=root.dataset.theme
+    || (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+  root.dataset.theme = cur==="dark"?"light":"dark";
+};
+
+/* scroll-spy */
+const links=[...document.querySelectorAll("#nav a")];
+const secs=links.map(a=>document.getElementById(a.getAttribute("href").slice(1)));
+const spy=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(!e.isIntersecting) return;
+    const i=secs.indexOf(e.target);
+    links.forEach((l,j)=>l.classList.toggle("on",j===i));
+  });
+},{rootMargin:"-10% 0px -80% 0px"});
+secs.forEach(s=>s&&spy.observe(s));
+
+/* "/" focuses search */
+addEventListener("keydown",e=>{
+  if(e.key==="/"&&document.activeElement!==qIn){e.preventDefault();
+    qIn.scrollIntoView({block:"center",behavior:"smooth"});qIn.focus();}
+});
+</script>
+</body>
+</html>
