@@ -202,6 +202,43 @@ func TestLeaseReducesSharedCalls(t *testing.T) {
 	}
 }
 
+// TestLeaseReportsTrueHeadroom checks that leasing stays invisible in the headers.
+//
+// A lease hit used to report the units left in the local batch rather than the
+// caller's quota, and a miss reported the shared limiter's count with the whole
+// prefetch already deducted. With limit 100 and prefetch 4 a client saw
+// X-RateLimit-Remaining go 99, 98, then 3, 2, 1, 0, then 93 — its quota apparently
+// collapsing and recovering every few requests, which is precisely the signal a
+// well-behaved client backs off on.
+//
+// The prefetched units were charged to this key centrally and are still its own to
+// spend, so the honest figure is the shared headroom plus whatever is held locally.
+// Every request here costs one unit, so the reported value must fall by exactly one
+// per request whether it was served locally or from the shared limiter.
+func TestLeaseReportsTrueHeadroom(t *testing.T) {
+	ctx := context.Background()
+	const (
+		limit    = 100
+		requests = 20
+	)
+
+	shared := limiter.NewSlidingWindowCounter(limiter.Config{Limit: limit, Window: time.Hour})
+	lc, err := limiter.NewLeaseCache(shared, leaseCfg(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 1; i <= requests; i++ {
+		r, err := lc.Allow(ctx, "k")
+		if err != nil || !r.Allowed {
+			t.Fatalf("request %d: allowed=%t err=%v", i, r.Allowed, err)
+		}
+		if want := int64(limit - i); r.Remaining != want {
+			t.Fatalf("request %d: remaining = %d, want %d", i, r.Remaining, want)
+		}
+	}
+}
+
 // TestLeaseWarmsUpBeforePrefetching pins the warm-up rule: a key's first miss claims
 // only what the request needs, and prefetching starts once the key is established.
 //
