@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/MarcusPrgin/Ratelimiter/internal/shardmap"
@@ -126,6 +127,10 @@ func (s *SlidingWindowCounter) Keys() int { return s.store.Len() }
 // millisecond, so the wait is need ÷ that rate. When the previous window is
 // empty nothing decays before the next boundary, so the caller waits out the
 // full window.
+//
+// Rounded up, matching sliding_window.lua's math.ceil. Rounding to nearest sends the
+// caller back up to half a millisecond early, which earns it a second denial — and,
+// with the penalty box enabled, a second strike for the service's own rounding.
 func retryAfterForCarryover(need, prevCount, windowMs int64, resetAfter time.Duration) time.Duration {
 	if need <= 0 {
 		return 0
@@ -134,7 +139,7 @@ func retryAfterForCarryover(need, prevCount, windowMs int64, resetAfter time.Dur
 		return resetAfter
 	}
 	perMs := float64(prevCount) / float64(windowMs)
-	wait := time.Duration(float64(need)/perMs+0.5) * time.Millisecond
+	wait := time.Duration(math.Ceil(float64(need)/perMs)) * time.Millisecond
 	if wait > resetAfter || wait <= 0 {
 		return resetAfter
 	}
