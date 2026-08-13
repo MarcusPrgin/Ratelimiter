@@ -80,9 +80,14 @@ func (c Config) Validate() error {
 	if c.BreakerThreshold < 0 {
 		return fmt.Errorf("breaker_threshold must be >= 0, got %d", c.BreakerThreshold)
 	}
-	if c.BreakerThreshold > 0 && c.BreakerCooldown <= 0 {
-		return fmt.Errorf("breaker_cooldown must be > 0 when the breaker is enabled, got %s",
-			c.BreakerCooldown)
+	// The breaker works in integer milliseconds, so a sub-millisecond cooldown
+	// truncates to zero. That does not merely shorten the cooldown: openUntilMs
+	// becomes equal to now, allow() finds the deadline already passed and probes on
+	// every request, so the breaker reports itself enabled while never actually
+	// bypassing the failing primary.
+	if c.BreakerThreshold > 0 && c.BreakerCooldown < time.Millisecond {
+		return fmt.Errorf("breaker_cooldown must be >= %s when the breaker is enabled, got %s",
+			time.Millisecond, c.BreakerCooldown)
 	}
 	return nil
 }
