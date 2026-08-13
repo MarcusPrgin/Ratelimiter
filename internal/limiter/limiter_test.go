@@ -172,6 +172,41 @@ func TestRemainingCountsDown(t *testing.T) {
 	}
 }
 
+// TestRemainingIsZeroWhenDenied pins the Result contract on the denial path, which
+// TestRemainingCountsDown does not reach: it stops at the last admitted request.
+//
+// The Redis token bucket used to report its leftover fractional tokens here, so a
+// request denied with 3.4 tokens against a cost of 4 answered 429 alongside
+// X-RateLimit-Remaining: 3 — quota the client cannot spend, and which contradicts
+// the Retry-After sent with it. The other three implementations reported zero, so
+// the same deployment gave different answers depending on the algorithm.
+func TestRemainingIsZeroWhenDenied(t *testing.T) {
+	ctx := context.Background()
+	for _, im := range implementations() {
+		t.Run(im.name, func(t *testing.T) {
+			l := im.build(t, steadyConfig(10))
+
+			// Leave a fractional, non-zero balance behind: 7 of 10 spent, then ask
+			// for 4. The request cannot be served, but the quota is not exhausted.
+			if r, err := l.AllowN(ctx, "k", 7); err != nil || !r.Allowed {
+				t.Fatalf("AllowN(7) => allowed=%t err=%v, want true", r.Allowed, err)
+			}
+
+			r, err := l.AllowN(ctx, "k", 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Allowed {
+				t.Fatal("AllowN(4) admitted at 7/10")
+			}
+			if r.Remaining != 0 {
+				t.Errorf("remaining on a denial = %d, want 0 — the middleware reports "+
+					"this as X-RateLimit-Remaining next to a 429", r.Remaining)
+			}
+		})
+	}
+}
+
 // TestConcurrentExactness is the core correctness property: whatever the
 // concurrency, exactly Limit requests are admitted. The suite this replaces only
 // checked that concurrent access did not trip the race detector, which passes just
