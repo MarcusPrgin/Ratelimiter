@@ -59,7 +59,27 @@ const (
 	// UnavailableDeniedBy marks a request refused because the limiter itself is
 	// unavailable, rather than because the caller is over quota.
 	UnavailableDeniedBy = "limiter_unavailable"
+	// PenaltyDeniedBy marks a request refused because the key is in the penalty
+	// box. The penalty package re-exports this as penalty.DeniedBy; the value is
+	// declared here so ReservedDeniedBy can cover it.
+	PenaltyDeniedBy = "penalty"
 )
+
+// ReservedDeniedBy reports whether a name is already taken by a built-in denial
+// reason, and so cannot be used as a chain tier name.
+//
+// Reusing one is not a cosmetic collision. CallerAttributable and the metrics layer
+// both dispatch on this string, so a tier called "limiter_unavailable" would have
+// its denials read as a backend outage: excluded from penalty strikes and plotted on
+// a dashboard as capacity loss rather than as callers hitting a quota.
+func ReservedDeniedBy(name string) bool {
+	switch name {
+	case ShedDeniedBy, UnavailableDeniedBy, PenaltyDeniedBy:
+		return true
+	default:
+		return false
+	}
+}
 
 // CallerAttributable reports whether a denial reflects the caller's own behaviour.
 //
