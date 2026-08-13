@@ -25,8 +25,10 @@ import (
 //go:embed penalty.lua
 var recordScript string
 
-// DeniedBy is the Result.DeniedBy value set on a penalty-box denial.
-const DeniedBy = "penalty"
+// DeniedBy is the Result.DeniedBy value set on a penalty-box denial. The value is
+// owned by the limiter package, which defines what Result.DeniedBy may contain and
+// which names a chain tier may therefore not reuse.
+const DeniedBy = limiter.PenaltyDeniedBy
 
 // Client is the subset of a Redis client the penalty box needs. Both
 // *redis.Client and *redis.ClusterClient satisfy it.
@@ -78,8 +80,12 @@ func (c Config) Validate() error {
 	if c.StrikeWindow <= 0 {
 		return fmt.Errorf("strike_window must be > 0, got %s", c.StrikeWindow)
 	}
-	if c.BasePenalty <= 0 {
-		return fmt.Errorf("base_penalty must be > 0, got %s", c.BasePenalty)
+	// Penalties are handed to Redis as integer millisecond TTLs, so anything shorter
+	// truncates to zero. PEXPIRE rejects a zero TTL outright, which fails the whole
+	// escalation script — the penalty box would count strikes and then never apply a
+	// penalty, logging a warning per offence.
+	if c.BasePenalty < time.Millisecond {
+		return fmt.Errorf("base_penalty must be >= %s, got %s", time.Millisecond, c.BasePenalty)
 	}
 	if c.MaxPenalty < c.BasePenalty {
 		return fmt.Errorf("max_penalty (%s) must be >= base_penalty (%s)",
