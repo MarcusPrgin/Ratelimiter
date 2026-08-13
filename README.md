@@ -3,7 +3,6 @@
 [![CI](https://github.com/MarcusPrgin/Ratelimiter/actions/workflows/ci.yml/badge.svg)](https://github.com/MarcusPrgin/Ratelimiter/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Redis](https://img.shields.io/badge/redis-5%2B-DC382D?logo=redis&logoColor=white)](https://redis.io)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A production-shaped distributed rate limiter in Go, backed by Redis.
 
@@ -50,7 +49,6 @@ New to the repo? [`SETUP.md`](SETUP.md) covers prerequisites and first run.
 - [Benchmarks](#benchmarks)
 - [Limitations and roadmap](#limitations-and-roadmap)
 - [Tech stack](#tech-stack)
-- [License](#license)
 
 ---
 
@@ -564,9 +562,3 @@ over the same `Limiter` interface.
 - **Prometheus + Grafana** — pull-based collectors, provisioned dashboard.
 - **k6** — `constant-arrival-rate` executor for load tests that mean something.
 - **miniredis** — real Lua execution in unit tests, with real Redis in CI behind it.
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
