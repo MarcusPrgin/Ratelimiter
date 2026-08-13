@@ -79,6 +79,7 @@ type RedisSlidingWindow struct {
 }
 
 func newRedisSlidingWindow(client redis.Scripter, cfg Config) *RedisSlidingWindow {
+	cfg = cfg.withDefaults()
 	return &RedisSlidingWindow{
 		client: client,
 		// redis.Script keeps the SHA internally and retries with EVAL on
@@ -86,7 +87,7 @@ func newRedisSlidingWindow(client redis.Scripter, cfg Config) *RedisSlidingWindo
 		// means mutating a shared SHA field from concurrent requests, which is a
 		// data race.
 		script:   redis.NewScript(slidingWindowScript),
-		cfg:      cfg.withDefaults(),
+		cfg:      cfg,
 		windowMs: cfg.Window.Milliseconds(),
 	}
 }
