@@ -133,8 +133,20 @@ func TestChainConstructorRejectsBadTiers(t *testing.T) {
 		{"empty name", []limiter.ChainTier{{Name: "", Limiter: tierLimiter(1)}}},
 		{"nil limiter", []limiter.ChainTier{{Name: "a"}}},
 		{"duplicate names", []limiter.ChainTier{good, good}},
-		{"reserved name", []limiter.ChainTier{{
+		// Every built-in DeniedBy value is reserved, not just the shed one. A tier
+		// allowed to call itself "limiter_unavailable" or "penalty" would have its
+		// denials misread downstream: CallerAttributable reports the first as the
+		// service's own fault, so the penalty box would stop striking a caller that
+		// is genuinely over quota, and the dashboard would plot the denials as
+		// capacity loss rather than as throttling.
+		{"reserved shed name", []limiter.ChainTier{{
 			Name: limiter.ShedDeniedBy, Limiter: tierLimiter(1),
+		}}},
+		{"reserved unavailable name", []limiter.ChainTier{{
+			Name: limiter.UnavailableDeniedBy, Limiter: tierLimiter(1),
+		}}},
+		{"reserved penalty name", []limiter.ChainTier{{
+			Name: limiter.PenaltyDeniedBy, Limiter: tierLimiter(1),
 		}}},
 	}
 	for _, tc := range tests {
