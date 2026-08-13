@@ -103,13 +103,23 @@ type AdaptiveLimiter struct {
 	inner Limiter
 	cfg   AdaptiveConfig
 	name  string
+	// epoch anchors the monotonic clock the control loop is paced by. A wall clock
+	// cannot be used: an NTP correction stepping it backwards would leave every
+	// subsequent sample looking like it arrived before the last adjustment, freezing
+	// the multiplier wherever it happened to be — quite possibly at MinMultiplier,
+	// shedding most of the traffic — until the wall clock caught up again.
+	epoch time.Time
 
 	// multiplierU holds math.Float64bits of the pass-through fraction.
 	multiplierU atomic.Uint64
 	// ewmaU holds math.Float64bits of the latency EWMA in milliseconds.
 	ewmaU atomic.Uint64
-	// lastAdjustMs is the epoch-ms timestamp of the last multiplier adjustment.
-	lastAdjustMs atomic.Int64
+	// lastAdjustNs is nanoseconds since epoch at the last multiplier adjustment.
+	// Zero — the starting value — reads as "adjusted at construction", so the first
+	// step waits out a full AdjustInterval. Treating it as "never adjusted" instead
+	// lets one cold-start latency sample, which is routinely an order of magnitude
+	// above steady state, shed traffic before any real signal exists.
+	lastAdjustNs atomic.Int64
 	// shed counts requests dropped by shedding, for the metrics layer to publish.
 	shed atomic.Uint64
 }
@@ -122,6 +132,7 @@ func NewAdaptiveLimiter(inner Limiter, cfg AdaptiveConfig) (*AdaptiveLimiter, er
 	a := &AdaptiveLimiter{
 		inner: inner,
 		cfg:   cfg,
+		epoch: time.Now(),
 		// Precomputed: Name() is called on every request by the metrics layer,
 		// and concatenating on each call allocates a string per request.
 		name: "adaptive/" + inner.Name(),
@@ -191,14 +202,18 @@ func (a *AdaptiveLimiter) observe(d time.Duration) {
 		}
 	}
 
-	nowMs := time.Now().UnixMilli()
-	last := a.lastAdjustMs.Load()
-	if nowMs-last < a.cfg.AdjustInterval.Milliseconds() {
+	// Nanoseconds, not milliseconds: AdjustInterval only has to be > 0, so any
+	// sub-millisecond interval truncated to zero and the loop adjusted on every
+	// single request — precisely the volume-driven behaviour AdjustInterval exists
+	// to prevent.
+	elapsed := time.Since(a.epoch).Nanoseconds()
+	last := a.lastAdjustNs.Load()
+	if elapsed-last < a.cfg.AdjustInterval.Nanoseconds() {
 		return
 	}
 	// Whichever caller wins this CAS performs the adjustment for this interval;
 	// the rest return without touching the multiplier.
-	if !a.lastAdjustMs.CompareAndSwap(last, nowMs) {
+	if !a.lastAdjustNs.CompareAndSwap(last, elapsed) {
 		return
 	}
 	a.adjust()
