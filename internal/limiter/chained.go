@@ -47,8 +47,8 @@ func NewChainedLimiter(tiers ...ChainTier) (*ChainedLimiter, error) {
 		if t.Name == "" {
 			return nil, fmt.Errorf("limiter: chain tier %d has an empty name", i)
 		}
-		if t.Name == ShedDeniedBy {
-			return nil, fmt.Errorf("limiter: chain tier %d uses reserved name %q", i, ShedDeniedBy)
+		if ReservedDeniedBy(t.Name) {
+			return nil, fmt.Errorf("limiter: chain tier %d uses reserved name %q", i, t.Name)
 		}
 		if t.Limiter == nil {
 			return nil, fmt.Errorf("limiter: chain tier %q has no limiter", t.Name)
