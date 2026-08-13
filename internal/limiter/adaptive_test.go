@@ -100,6 +100,76 @@ func TestAdaptiveAdjustsOnTimeNotVolume(t *testing.T) {
 	}
 }
 
+// TestAdaptiveHoldsSteadyThroughFirstInterval covers the controller's cold start.
+//
+// The last-adjustment timestamp started at zero, which read as "never adjusted", so
+// the very first latency sample stepped the multiplier immediately. A process whose
+// first limiter call is slow — a cold Redis connection paying TCP and auth setup is
+// routinely an order of magnitude above steady state — began shedding traffic before
+// the EWMA had any real signal in it, and then needed one interval per step to climb
+// back. Zero must mean "adjusted at construction" instead.
+func TestAdaptiveHoldsSteadyThroughFirstInterval(t *testing.T) {
+	ctx := context.Background()
+	cfg := adaptiveCfg()
+	// Watermarks well below any real call latency, so every sample reads as overloaded.
+	cfg.LowWatermarkMs = 0.0001
+	cfg.HighWatermarkMs = 0.001
+	cfg.AdjustInterval = time.Hour
+	cfg.DecreaseRatio = 0.5
+
+	slow := &sleepyLimiter{delay: 2 * time.Millisecond}
+	a := newAdaptive(t, slow, cfg)
+
+	for i := 0; i < 5; i++ {
+		if _, err := a.Allow(ctx, "k"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if m := a.Multiplier(); m != 1.0 {
+		t.Errorf("multiplier = %g after 5 slow calls inside the first interval, want 1.0; "+
+			"the controller stepped before one AdjustInterval had elapsed", m)
+	}
+}
+
+// TestAdaptiveSubMillisecondIntervalStillPaces pins the interval's resolution.
+//
+// AdjustInterval only has to be > 0, and the comparison used to be in whole
+// milliseconds, so any sub-millisecond interval truncated to zero and the loop
+// adjusted on every request — exactly the volume-driven collapse AdjustInterval
+// exists to prevent, silently reintroduced by a config value that Validate accepts.
+func TestAdaptiveSubMillisecondIntervalStillPaces(t *testing.T) {
+	ctx := context.Background()
+	cfg := adaptiveCfg()
+	// Below the cost of a function call, so every sample reads as overloaded and no
+	// sample can land in the deadband and hold the multiplier steady for the wrong
+	// reason — which would make this test vacuous.
+	cfg.LowWatermarkMs = 0.000_001
+	cfg.HighWatermarkMs = 0.000_01
+	cfg.AdjustInterval = 999 * time.Microsecond
+	cfg.DecreaseRatio = 0.5
+	cfg.MinMultiplier = 0.01
+
+	inner := limiter.NewSlidingWindowCounter(limiter.Config{Limit: 1 << 30, Window: time.Hour})
+	a := newAdaptive(t, inner, cfg)
+
+	// An in-memory limiter answers in well under a microsecond, so this whole burst
+	// fits inside a couple of intervals however loaded the machine is.
+	for i := 0; i < 50; i++ {
+		if _, err := a.Allow(ctx, "k"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Truncation gave one step per request: 0.5^50 clamps to MinMultiplier. A paced
+	// loop cannot have taken more than a handful of steps.
+	if m := a.Multiplier(); m <= 0.1 {
+		t.Errorf("multiplier fell to %g over 50 fast calls with a %s interval; "+
+			"the interval was truncated away and the loop stepped per request",
+			m, cfg.AdjustInterval)
+	}
+}
+
 // TestAdaptiveRecoversWhenHealthy checks the additive-increase half of the loop.
 func TestAdaptiveRecoversWhenHealthy(t *testing.T) {
 	ctx := context.Background()
