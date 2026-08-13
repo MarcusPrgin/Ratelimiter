@@ -294,6 +294,15 @@ func TestConfigValidation(t *testing.T) {
 			Strategy: fallback.FailOpen, BreakerThreshold: -1}, false},
 		{"breaker without cooldown", fallback.Config{
 			Strategy: fallback.FailOpen, BreakerThreshold: 3}, false},
+		// The breaker works in integer milliseconds. A sub-millisecond cooldown
+		// truncates to zero, which does not shorten the cooldown but removes it: the
+		// open deadline lands on the current instant, so every request finds it already
+		// passed and probes the failing primary anyway.
+		{"sub-millisecond cooldown", fallback.Config{
+			Strategy:         fallback.FailOpen,
+			BreakerThreshold: 3,
+			BreakerCooldown:  500 * time.Microsecond,
+		}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
