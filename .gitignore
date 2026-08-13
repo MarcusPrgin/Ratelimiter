@@ -14,3 +14,6 @@ docs/k6-*.json
 .env.*
 
 vendor/
+
+# OS
+.DS_Store
